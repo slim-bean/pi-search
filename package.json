@@ -1,0 +1,19 @@
+{
+  "name": "pi-search",
+  "version": "0.1.0",
+  "description": "Pluggable web search + readable web fetch tools for the pi coding agent.",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "jsdom": "^24.1.0"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
