@@ -6,14 +6,20 @@ backend) and `web_fetch` (readable URL fetch). See `README.md` for user docs.
 ## Layout
 
 - `src/index.ts` — entry point. Registers both tools, the `/search-provider`
-  command, and the `--search-provider` flag. Holds the runtime `selected`
-  provider id (flag → command → `PI_SEARCH_PROVIDER` env → `auto`).
+  and `/search-key` commands, and the `--search-provider` flag. Holds the
+  runtime `selected` provider id (flag → command → `PI_SEARCH_PROVIDER` env →
+  `auto`).
 - `src/search/types.ts` — `SearchProvider` interface plus `SearchResult` /
   `SearchResponse` / `SearchOptions` and the `recencyToDays` helper.
 - `src/search/registry.ts` — `PROVIDERS` (priority-ordered), `resolveProvider`
   (selection + key resolution), `listAvailable`.
 - `src/search/keys.ts` — `foundationKey` (pi `modelRegistry` then env) and
-  `envKey`.
+  `envKey`. `foundationKey` skips OAuth-typed credentials (their tokens aren't
+  valid `x-api-key`s) and honors the key-source override.
+- `src/search/keySource.ts` — per-foundation-provider key-source overrides:
+  `getKeySource`/`setKeySource` (runtime `/search-key` →
+  `PI_SEARCH_KEY_PROVIDER_<PROVIDER>` env), `listApiKeyProviders`, and the
+  `default`/`env` sentinels.
 - `src/search/format.ts` — renders a `SearchResponse` to text for the LLM.
 - `src/search/providers/*.ts` — one provider per file.
 - `src/fetch/fetch.ts` — `fetchReadable`, ported from 2h-team/wiki
@@ -24,8 +30,12 @@ backend) and `web_fetch` (readable URL fetch). See `README.md` for user docs.
 
 - Foundation providers (`anthropic`, `openai`, `gemini`) resolve keys via
   `foundationKey(ctx, piProviderName, ...envFallback)` so they reuse the user's
-  existing pi credentials. API providers (`tavily`, `brave`, `exa`) use
-  `envKey(...)` only.
+  existing pi credentials, and declare `piProvider` (the pi provider id backing
+  them) so `/search-key` can target them. API providers (`tavily`, `brave`,
+  `exa`) use `envKey(...)` only.
+- OAuth (subscription) logins are never forwarded as API keys. Users with an
+  OAuth-backed provider point at an API-key credential via `/search-key` or
+  `PI_SEARCH_KEY_PROVIDER_<PROVIDER>`.
 - To add a provider: implement `SearchProvider`, export it, append to
   `PROVIDERS` in `registry.ts` (order = auto-detect priority).
 - Throw from `provider.search` / `fetchReadable` on error; pi marks the tool

@@ -11,6 +11,7 @@ export const geminiProvider: SearchProvider = {
   id: "gemini",
   label: "Google Gemini (search grounding)",
   kind: "foundation",
+  piProvider: "google",
 
   resolveKey(ctx) {
     return foundationKey(ctx, "google", "GEMINI_API_KEY", "GOOGLE_API_KEY");

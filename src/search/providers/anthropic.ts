@@ -13,6 +13,7 @@ export const anthropicProvider: SearchProvider = {
   id: "anthropic",
   label: "Anthropic (web_search)",
   kind: "foundation",
+  piProvider: "anthropic",
 
   resolveKey(ctx) {
     return foundationKey(ctx, "anthropic", "ANTHROPIC_API_KEY");

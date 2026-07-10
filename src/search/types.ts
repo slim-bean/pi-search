@@ -44,6 +44,12 @@ export interface SearchProvider {
   label: string;
   kind: "foundation" | "api";
   /**
+   * For foundation providers, the pi provider id whose credentials back this
+   * search backend (e.g. "anthropic", "google"). Used by /search-key to target
+   * the right key source.
+   */
+  piProvider?: string;
+  /**
    * Resolve the API key for this provider, or undefined if unavailable.
    * Foundation providers should reuse ctx.modelRegistry; API providers read env.
    */

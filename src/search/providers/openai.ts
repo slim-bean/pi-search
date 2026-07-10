@@ -13,6 +13,7 @@ export const openaiProvider: SearchProvider = {
   id: "openai",
   label: "OpenAI (web_search)",
   kind: "foundation",
+  piProvider: "openai",
 
   resolveKey(ctx) {
     return foundationKey(ctx, "openai", "OPENAI_API_KEY");

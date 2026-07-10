@@ -26,6 +26,36 @@ Search is pluggable. Two kinds of provider:
 (via `ctx.modelRegistry`), so no extra setup is needed for a provider whose
 chat models you already use. **API** providers read a dedicated env var.
 
+Foundation providers require a real **API key**. OAuth (subscription) logins —
+e.g. a Claude Pro/Max login stored under the `anthropic` provider — are skipped,
+since their tokens are not valid as an `x-api-key` for the search APIs. If your
+provider login is OAuth, set the matching env var (`ANTHROPIC_API_KEY`, …) or
+point the provider at a pi credential that holds an API key (see below).
+
+### Choosing where a foundation key comes from
+
+By default a foundation provider sources its key from the pi provider of the
+same name (`anthropic`, `openai`, `google`). To source it from a different pi
+provider that holds an API key (e.g. `anthropic-apikey` when your `anthropic`
+login is OAuth), use the `/search-key` command or the
+`PI_SEARCH_KEY_PROVIDER_<PROVIDER>` env var.
+
+Precedence: `/search-key` runtime choice → `PI_SEARCH_KEY_PROVIDER_<PROVIDER>` →
+default (provider's own credentials) → env-var fallback.
+
+```bash
+# Resolve anthropic's search key from the anthropic-apikey provider
+PI_SEARCH_KEY_PROVIDER_ANTHROPIC=anthropic-apikey pi
+```
+
+```
+/search-key                       # show key sources (or pick interactively)
+/search-key anthropic-apikey      # set source for the current foundation provider
+/search-key anthropic anthropic-apikey  # set source for a named provider
+/search-key anthropic default     # back to the provider's own credentials
+/search-key openai env            # use OPENAI_API_KEY env var only
+```
+
 ### Selecting a provider
 
 Precedence: `--search-provider` flag → `/search-provider` command → the
@@ -79,11 +109,12 @@ pi -e ./src/index.ts
 
 ```
 src/
-  index.ts              # registers web_search + web_fetch tools, /search-provider command, --search-provider flag
+  index.ts              # registers web_search + web_fetch tools, /search-provider + /search-key commands, --search-provider flag
   search/
     types.ts            # SearchProvider interface, SearchResult/SearchResponse
     registry.ts         # provider list, auto-detect, selection
-    keys.ts             # API-key resolution (pi registry + env)
+    keys.ts             # API-key resolution (pi registry + env; skips OAuth creds)
+    keySource.ts        # foundation key-source overrides (/search-key, env)
     format.ts           # SearchResponse -> text for the LLM
     providers/          # one file per backend (anthropic, openai, gemini, tavily, brave, exa)
   fetch/

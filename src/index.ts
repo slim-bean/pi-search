@@ -5,6 +5,14 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { resolveProvider, listAvailable, getProvider, PROVIDERS } from "./search/registry";
 import { formatSearchResponse } from "./search/format";
 import { fetchReadable } from "./fetch/fetch";
+import type { SearchProvider } from "./search/types";
+import {
+  setKeySource,
+  getKeySource,
+  listApiKeyProviders,
+  KEY_SOURCE_DEFAULT,
+  KEY_SOURCE_ENV,
+} from "./search/keySource";
 
 const searchParameters = Type.Object({
   query: Type.String({ description: "The search query." }),
@@ -139,6 +147,111 @@ export default function (pi: ExtensionAPI) {
           `Set with: /search-provider <id>`,
         "info",
       );
+    },
+  });
+
+  const foundations = () => PROVIDERS.filter((p) => p.kind === "foundation");
+
+  const describeSource = (source: string | undefined, piProvider: string): string => {
+    if (!source || source === KEY_SOURCE_DEFAULT) return `default (${piProvider})`;
+    if (source === KEY_SOURCE_ENV) return "environment variable only";
+    return `pi provider "${source}"`;
+  };
+
+  const applyKeySource = (
+    ctx: ExtensionContext,
+    target: SearchProvider,
+    source: string,
+  ): void => {
+    const piProvider = target.piProvider!;
+    setKeySource(piProvider, source === KEY_SOURCE_DEFAULT ? undefined : source);
+    ctx.ui.notify(
+      `Search key for ${target.id} sourced from: ${describeSource(source, piProvider)}`,
+      "info",
+    );
+  };
+
+  pi.registerCommand("search-key", {
+    description: "Show or set which pi provider supplies a foundation provider's search API key",
+    getArgumentCompletions(prefix) {
+      const items = [
+        ...foundations().map((p) => ({ value: p.id, label: `${p.id} (foundation provider)` })),
+        { value: KEY_SOURCE_DEFAULT, label: "default (use provider's own credentials)" },
+        { value: KEY_SOURCE_ENV, label: "env (environment variable only)" },
+      ];
+      const filtered = items.filter((i) => i.value.startsWith(prefix));
+      return filtered.length > 0 ? filtered : null;
+    },
+    async handler(args, ctx) {
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      const current = getProvider(selected);
+      const currentFoundation = current?.kind === "foundation" ? current : undefined;
+
+      // Resolve target foundation provider and (optionally) the source from args.
+      let target: SearchProvider | undefined;
+      let source: string | undefined;
+      if (parts.length >= 2) {
+        target = getProvider(parts[0]);
+        source = parts[1];
+      } else if (parts.length === 1) {
+        const asProvider = getProvider(parts[0]);
+        if (asProvider?.kind === "foundation") {
+          target = asProvider;
+        } else {
+          target = currentFoundation;
+          source = parts[0];
+        }
+      }
+
+      // Direct, non-interactive set.
+      if (source) {
+        if (!target || target.kind !== "foundation" || !target.piProvider) {
+          ctx.ui.notify(
+            `Key source applies to foundation providers only: ${foundations()
+              .map((p) => p.id)
+              .join(", ")}. ` + `Usage: /search-key [<provider>] <source>`,
+            "error",
+          );
+          return;
+        }
+        applyKeySource(ctx, target, source);
+        return;
+      }
+
+      // No source given: without UI, show current key sources.
+      if (!ctx.hasUI) {
+        const lines = foundations().map((p) => {
+          const eff = getKeySource(p.piProvider!);
+          return `  ${p.id} — ${describeSource(eff, p.piProvider!)}`;
+        });
+        ctx.ui.notify(
+          `Search key sources:\n${lines.join("\n")}\n\n` +
+            `Set with: /search-key [<provider>] <source>`,
+          "info",
+        );
+        return;
+      }
+
+      // Interactive: pick the target foundation provider if not already known.
+      if (!target) {
+        const fps = foundations();
+        const labels = fps.map((p) => {
+          const eff = getKeySource(p.piProvider!);
+          return `${p.id} — ${describeSource(eff, p.piProvider!)}`;
+        });
+        const picked = await ctx.ui.select("Foundation search provider", labels);
+        if (!picked) return;
+        target = fps[labels.indexOf(picked)];
+      }
+      if (!target?.piProvider) return;
+
+      // Interactive: pick the key source.
+      const apiKeyProviders = listApiKeyProviders(ctx);
+      const values = [KEY_SOURCE_DEFAULT, ...apiKeyProviders, KEY_SOURCE_ENV];
+      const labels = values.map((v) => describeSource(v, target!.piProvider!));
+      const picked = await ctx.ui.select(`Key source for ${target.id}`, labels);
+      if (!picked) return;
+      applyKeySource(ctx, target, values[labels.indexOf(picked)]);
     },
   });
 }
