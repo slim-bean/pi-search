@@ -6,8 +6,12 @@ Adds two LLM-callable tools:
 
 - **`web_search`** — search the web through a pluggable backend. Returns a
   synthesized answer (foundation-model and Tavily providers) plus source URLs.
-- **`web_fetch`** — fetch a URL and return clean, readable text. HTML is reduced
-  to the main article via Mozilla Readability; JSON and plain text pass through.
+- **`web_fetch`** — fetch a URL and return it as Markdown. Negotiates
+  `text/markdown` with the server, follows `<link rel=alternate
+  type=text/markdown>`, otherwise extracts the main article (Mozilla
+  Readability) and converts it with Turndown so headings, code blocks and
+  links survive. Reports the site's `llms.txt` when one exists. JSON and plain
+  text pass through.
 
 ## Providers
 
@@ -83,6 +87,42 @@ In a session:
 Override the foundation model used for search with `PI_SEARCH_MODEL`
 (e.g. `claude-haiku-4-5`, `gpt-4o-mini`, `gemini-2.0-flash`).
 
+## web_fetch
+
+`web_fetch(url, maxChars?, format?)` is built for agents, not browsers. In order:
+
+1. **Content negotiation.** Sends `Accept: text/markdown;q=1.0, text/html;q=0.8, …`
+   (same as Claude Code and OpenCode). Docs sites that publish Markdown for
+   agents — grafana.com, Mintlify-hosted docs, Cloudflare, Vercel, and many
+   others — return it directly, links and code intact. `Extractor: markdown`.
+2. **Alternate link.** If HTML comes back but advertises
+   `<link rel="alternate" type="text/markdown">`, that URL is fetched instead
+   (one hop). `Extractor: alternate`.
+3. **Readability → Turndown.** Otherwise the main article is isolated with
+   Mozilla Readability and converted to GitHub-flavoured Markdown.
+   `Extractor: readability`.
+4. **Body fallback.** When Readability keeps under 20% of the page text
+   (marketing pages, card grids), the largest `<main>`/`<article>`/`<body>` is
+   converted instead, with nav/header/footer stripped. `Extractor: body`.
+5. **Naive strip** as a last resort. `Extractor: naive`.
+
+JSON, plain text and other non-HTML types pass through unchanged
+(`Extractor: raw`). Redirects are followed and the final URL is reported.
+
+Every result also probes `<origin>/llms.txt` once per origin (3 s timeout,
+cached) and, when found, adds an `llms.txt: <url>` line so the model can
+discover the site's curated docs index.
+
+| `format` | Behaviour |
+|---|---|
+| `markdown` (default) | Steps 1–5 above. |
+| `text` | Prefers `text/plain`; HTML is reduced to plain text (no Turndown). Server Markdown is still accepted. |
+| `html` | Returns the raw HTML. `Accept` omits `text/markdown` entirely because some servers ignore q-values. |
+
+Why this matters: on `grafana.com/docs/loki/latest/query/` the old
+`textContent` extraction yielded 0 headings, 0 links and 0 code fences. Native
+Markdown gives 8 / 24 / 10; Turndown on the same HTML gives 7 / 18 / 10.
+
 ## Install
 
 This is a pi package. Add it to your pi `settings.json`:
@@ -96,8 +136,8 @@ This is a pi package. Add it to your pi `settings.json`:
 Or symlink/copy into an auto-discovered location
 (`~/.pi/agent/extensions/` or a project's `.pi/extensions/`).
 
-Run `npm install` in this directory first so `jsdom` and
-`@mozilla/readability` are available to `web_fetch`.
+Run `npm install` in this directory first so `jsdom`, `@mozilla/readability`,
+`turndown` and `turndown-plugin-gfm` are available to `web_fetch`.
 
 For quick testing without installing:
 
@@ -118,7 +158,7 @@ src/
     format.ts           # SearchResponse -> text for the LLM
     providers/          # one file per backend (anthropic, openai, gemini, tavily, brave, exa)
   fetch/
-    fetch.ts            # readable web fetch (Readability + jsdom)
+    fetch.ts            # web fetch: content negotiation, alternate link, Readability + Turndown, body fallback, llms.txt probe
 ```
 
 ### Adding a provider

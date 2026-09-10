@@ -1,7 +1,8 @@
 # AGENTS.md
 
 pi-search is a pi extension providing two LLM tools: `web_search` (pluggable
-backend) and `web_fetch` (readable URL fetch). See `README.md` for user docs.
+backend) and `web_fetch` (URL → Markdown for agents). See `README.md` for user
+docs.
 
 ## Layout
 
@@ -22,9 +23,12 @@ backend) and `web_fetch` (readable URL fetch). See `README.md` for user docs.
   `default`/`env` sentinels.
 - `src/search/format.ts` — renders a `SearchResponse` to text for the LLM.
 - `src/search/providers/*.ts` — one provider per file.
-- `src/fetch/fetch.ts` — `fetchReadable`, ported from 2h-team/wiki
-  `fetchTools.ts`, adapted to Node (jsdom instead of browser DOMParser, direct
-  fetch instead of CORS proxy).
+- `src/fetch/fetch.ts` — `fetchReadable(url, { maxChars, format, signal })`.
+  Pipeline: `Accept: text/markdown` negotiation → `<link rel=alternate
+  type=text/markdown>` → Readability + Turndown (GFM) → body fallback → naive
+  strip. Also `probeLlmsTxt(origin)` (cached per origin). The `Extractor`
+  union documents which path produced the content. Originally ported from
+  2h-team/wiki `fetchTools.ts`.
 
 ## Conventions
 
@@ -41,6 +45,14 @@ backend) and `web_fetch` (readable URL fetch). See `README.md` for user docs.
 - Throw from `provider.search` / `fetchReadable` on error; pi marks the tool
   result as an error and reports it to the LLM.
 - Pass `signal` through to `fetch` so Esc can cancel.
+- `fetch.ts` Accept headers: keep `text/markdown` **out** of the `html` format
+  and out of the `llms.txt` probe. grafana.com (and likely others) ignore
+  q-values and serve Markdown whenever the type appears, and 404 `/llms.txt`
+  when asked for Markdown. Both were observed in production.
+- Readability mutates the DOM; parse a clone so the body fallback sees the
+  original document.
+- Never let the `llms.txt` probe throw or block: it is best-effort, cached,
+  and bounded by `LLMS_TXT_TIMEOUT_MS`.
 
 ## Testing
 
@@ -51,4 +63,17 @@ pi -e ./src/index.ts -p "Use web_search to find X. Then stop."
 pi -e ./src/index.ts -p "Use web_fetch on https://example.com. Then stop."
 ```
 
-`npm install` must have been run so `jsdom` / `@mozilla/readability` resolve.
+`npm install` must have been run so `jsdom`, `@mozilla/readability`, `turndown`
+and `turndown-plugin-gfm` resolve.
+
+Direct module test without spending LLM tokens (Node ≥ 22.6 strips types):
+
+```bash
+node -e 'import("./src/fetch/fetch.ts").then(async m => { const r = await m.fetchReadable("https://grafana.com/docs/loki/latest/query/"); console.log(r.extractor, r.llmsTxt, r.length); })'
+```
+
+Useful fixtures: `grafana.com/docs/*` (negotiates Markdown), `grafana.com/oss/loki/`
+(body fallback), any `text/html` page that sets `<link rel=alternate
+type=text/markdown>` without negotiating (alternate path). Type-check with
+`npx -y -p typescript@5 tsc --noEmit -p tsconfig.json`; errors about
+`@earendil-works/*` / `typebox` are expected (pi-provided peers).

@@ -31,6 +31,14 @@ const fetchParameters = Type.Object({
   maxChars: Type.Optional(
     Type.Number({ description: "Truncate returned content to this many characters (default 50000)." }),
   ),
+  format: Type.Optional(
+    StringEnum(["markdown", "text", "html"] as const, {
+      description:
+        "Output format (default markdown). markdown: native Markdown when the server offers it, " +
+        "otherwise the main article converted to Markdown with links preserved. text: plain text. " +
+        "html: the raw HTML (for <head> metadata, scripts, etc).",
+    }),
+  ),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -80,18 +88,26 @@ export default function (pi: ExtensionAPI) {
     name: "web_fetch",
     label: "Web Fetch",
     description:
-      "Fetch a URL and return its content as clean, readable text. HTML pages " +
-      "are reduced to the main article (Readability); JSON and plain text are " +
-      "returned as-is. Works for docs, articles, GitHub, and APIs.",
-    promptSnippet: "Fetch a URL and return clean readable text",
+      "Fetch a URL and return its content as Markdown. Asks the server for " +
+      "text/markdown first (many docs sites serve it); otherwise the main article " +
+      "is extracted and converted to Markdown with headings, code blocks and links " +
+      "intact. JSON and plain text are returned as-is. Reports the site's llms.txt " +
+      "when one exists. Works for docs, articles, GitHub, and APIs.",
+    promptSnippet: "Fetch a URL and return it as clean Markdown",
     promptGuidelines: [
       "Use web_fetch to read the full content of a page, especially URLs returned by web_search.",
+      "Follow links in fetched Markdown to navigate a docs site rather than searching again.",
+      "If a web_fetch result reports an llms.txt, fetch it: it is a curated index of the site's machine-readable docs.",
       "For GitHub source files, prefer raw.githubusercontent.com URLs with web_fetch for clean output.",
     ],
     parameters: fetchParameters,
     async execute(_toolCallId, params, signal, onUpdate) {
       onUpdate?.({ content: [{ type: "text", text: `Fetching ${params.url}…` }] });
-      const result = await fetchReadable(params.url, params.maxChars, signal);
+      const result = await fetchReadable(params.url, {
+        maxChars: params.maxChars,
+        format: params.format,
+        signal,
+      });
 
       const header = [
         result.title ? `# ${result.title}` : null,
@@ -99,6 +115,7 @@ export default function (pi: ExtensionAPI) {
         result.siteName ? `Site: ${result.siteName}` : null,
         `URL: ${result.url}`,
         `Extractor: ${result.extractor}${result.truncated ? " (truncated)" : ""}`,
+        result.llmsTxt ? `llms.txt: ${result.llmsTxt}` : null,
       ]
         .filter(Boolean)
         .join("\n");
