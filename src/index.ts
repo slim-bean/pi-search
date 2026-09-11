@@ -92,7 +92,8 @@ export default function (pi: ExtensionAPI) {
       "text/markdown first (many docs sites serve it); otherwise the main article " +
       "is extracted and converted to Markdown with headings, code blocks and links " +
       "intact. JSON and plain text are returned as-is. Reports the site's llms.txt " +
-      "when one exists. Works for docs, articles, GitHub, and APIs.",
+      "when one exists. Sites behind bot protection return a clear error with " +
+      "alternatives rather than fake content. Works for docs, articles, GitHub, and APIs.",
     promptSnippet: "Fetch a URL and return it as clean Markdown",
     promptGuidelines: [
       "Use web_fetch to read the full content of a page, especially URLs returned by web_search.",
@@ -114,7 +115,9 @@ export default function (pi: ExtensionAPI) {
         result.byline ? `By ${result.byline}` : null,
         result.siteName ? `Site: ${result.siteName}` : null,
         `URL: ${result.url}`,
-        `Extractor: ${result.extractor}${result.truncated ? " (truncated)" : ""}`,
+        `Extractor: ${result.extractor}` +
+          (result.proxy ? ` (${result.proxy}${result.proxyExtractor ? ` → ${result.proxyExtractor}` : ""})` : "") +
+          (result.truncated ? " (truncated)" : ""),
         result.llmsTxt ? `llms.txt: ${result.llmsTxt}` : null,
       ]
         .filter(Boolean)

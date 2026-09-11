@@ -29,6 +29,23 @@ docs.
   strip. Also `probeLlmsTxt(origin)` (cached per origin). The `Extractor`
   union documents which path produced the content. Originally ported from
   2h-team/wiki `fetchTools.ts`.
+- `src/fetch/blocked.ts` — bot-protection detection: `classifyBlockedResponse`
+  (401/403/429/503 + vendor from headers), `detectChallengePage` (200 bodies
+  that are JS-challenge, captcha or WAF interstitials),
+  `BlockedError`, and `blockedMessage` (the LLM-facing explanation).
+- `src/fetch/proxies/` — opt-in reader proxies (`PI_SEARCH_FETCH_PROXY`).
+  `types.ts` (`ReaderProxy`, `ProxyResult`, `ProxyTargetBlockedError`),
+  `jina.ts` (hosted, returns Markdown), `browser.ts` (talks to
+  a browser-fetch server, returns HTML), `index.ts` (`PROXIES`, `selectedProxy`,
+  `isProxyHost` for `PI_SEARCH_FETCH_PROXY_HOSTS`). A proxy returns either
+  `content` (Markdown, used as-is) or `html` (run through the normal
+  Readability → Turndown pipeline so output shape matches a direct fetch).
+- The `browser` proxy talks to [browser-fetch](https://github.com/slim-bean/browser-fetch),
+  a separate repo (Go service driving a real Chrome over CDP). The wire
+  contract is `POST /fetch {url,timeout_ms,assist_ms}` →
+  `{url,title,html,status,…}`, with error `code`s `challenge` / `nav_error` /
+  `rejected_url` meaning "the target refused" (mapped to
+  `ProxyTargetBlockedError`) and anything else meaning "the proxy is broken".
 
 ## Conventions
 
@@ -53,6 +70,29 @@ docs.
   original document.
 - Never let the `llms.txt` probe throw or block: it is best-effort, cached,
   and bounded by `LLMS_TXT_TIMEOUT_MS`.
+- Don't try to defeat bot protection with browser User-Agents or spoofed
+  `Sec-Fetch-*` headers. The blocks we tested against are TLS-fingerprint based
+  and a Chrome UA from curl gets the same 403; an
+  honest UA plus a clear error is the right behaviour. Reader proxies are the
+  sanctioned escape hatch and stay opt-in (URL disclosure).
+- Some hosts refuse *hosted* proxies too. `fetchViaProxy` short-circuits on
+  `skipsHostedProxies` (from `PI_SEARCH_PROXY_SKIP_HOSTS`) for everything except
+  the `browser` proxy, which is self-hosted and often does get through — no
+  wasted call, no needless URL disclosure. Keep this configuration, not
+  hardcoded host knowledge.
+- To add a proxy: implement `ReaderProxy` in `src/fetch/proxies/`, append to
+  `PROXIES` in `index.ts`. Throw `ProxyTargetBlockedError` when the *target*
+  refused the proxy, plain `Error` when the proxy itself failed; the two produce
+  different advice to the model.
+- Extraction thresholds in `fetch.ts` are tuned against real pages, not
+  intuition: Readability legitimately returns 5–12% of body text on comment-heavy
+  pages (measured 4.6% on a discussion thread, 12.5% on a long-form article),
+  so the guard is absolute length
+  (`READABILITY_MIN_CHARS`) with a low ratio floor, plus a `losesCode` check — if
+  the body has `<pre>` and Readability kept none, prefer the body candidate.
+- Keep `@mozilla/readability` current. 0.5.0 silently dropped tab-widget code
+  blocks (grafana.com tutorials lost their `docker compose up -d`); 0.6.0 keeps
+  them. Re-run the fixture checks in Testing below after upgrading.
 
 ## Testing
 
@@ -66,14 +106,21 @@ pi -e ./src/index.ts -p "Use web_fetch on https://example.com. Then stop."
 `npm install` must have been run so `jsdom`, `@mozilla/readability`, `turndown`
 and `turndown-plugin-gfm` resolve.
 
-Direct module test without spending LLM tokens (Node ≥ 22.6 strips types):
+Direct module test without spending LLM tokens. Relative imports are
+extensionless (pi resolves them via jiti), so use `tsx` rather than Node's
+native type stripping:
 
 ```bash
-node -e 'import("./src/fetch/fetch.ts").then(async m => { const r = await m.fetchReadable("https://grafana.com/docs/loki/latest/query/"); console.log(r.extractor, r.llmsTxt, r.length); })'
+npx -y tsx -e 'import("./src/fetch/fetch.ts").then(async m => { const r = await m.fetchReadable("https://grafana.com/docs/loki/latest/query/"); console.log(r.extractor, r.llmsTxt, r.length); })'
 ```
 
 Useful fixtures: `grafana.com/docs/*` (negotiates Markdown), `grafana.com/oss/loki/`
 (body fallback), any `text/html` page that sets `<link rel=alternate
-type=text/markdown>` without negotiating (alternate path). Type-check with
+type=text/markdown>` without negotiating (alternate path),
+a discussion site that serves a 200 JS-challenge or captcha shell to
+non-browser clients (→ `BlockedError`), a publisher behind a WAF that 403s them
+(succeeds with `PI_SEARCH_FETCH_PROXY=jina` or `=browser`),
+`grafana.com/tutorials/play-with-grafana-mimir/` (must contain
+`docker compose up -d` — the tab-widget code-block regression). Type-check with
 `npx -y -p typescript@5 tsc --noEmit -p tsconfig.json`; errors about
 `@earendil-works/*` / `typebox` are expected (pi-provided peers).

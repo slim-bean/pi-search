@@ -123,6 +123,73 @@ Why this matters: on `grafana.com/docs/loki/latest/query/` the old
 `textContent` extraction yielded 0 headings, 0 links and 0 code fences. Native
 Markdown gives 8 / 24 / 10; Turndown on the same HTML gives 7 / 18 / 10.
 
+### Blocked sites
+
+Some sites refuse non-browser clients at the TLS-fingerprint level, so no
+User-Agent or header tweak gets through. Two shapes are recognised:
+
+- HTTP 401/403/429/503 from a WAF.
+- HTTP **200** whose body is a JavaScript challenge or a captcha interstitial,
+  not the page. The old behaviour handed the model that shell as if it were
+  content, which is worse than an error because it looks real.
+
+Both become a `BlockedError` naming the protection and suggesting alternatives,
+instead of a bogus success.
+
+Escalation, in order of what usually works: a search provider that already has
+the content indexed; a hosted reader proxy; a self-hosted browser proxy; and for
+sites that gate content behind an account, a signed-in browser profile. Some
+hosts refuse hosted readers as firmly as they refuse a plain HTTP client —
+list those in `PI_SEARCH_PROXY_SKIP_HOSTS` so pi-search doesn't disclose the URL
+to a third party for nothing.
+
+Search providers differ here too: their coverage depends on their licensing
+deals, so a site missing from one provider's results may be present in
+another's. Switch with `/search-provider`.
+
+### Reader proxies (opt-in, off by default)
+
+When a fetch is blocked, `web_fetch` can retry through a proxy that renders the
+page in a real browser. Two are built in:
+
+```bash
+PI_SEARCH_FETCH_PROXY=jina        # hosted reader, r.jina.ai
+PI_SEARCH_FETCH_PROXY=browser     # your own Chrome, via a browser-fetch server
+PI_SEARCH_FETCH_PROXY=off         # default
+
+# Skip the doomed direct attempt for hosts you know always block:
+PI_SEARCH_FETCH_PROXY_HOSTS=host.example,another.example
+# Hosts where hosted readers are refused too (a self-hosted browser is still tried):
+PI_SEARCH_PROXY_SKIP_HOSTS=host.example
+```
+
+Only blocked fetches use a proxy. The result header shows which one and how the
+page was reduced, e.g. `Extractor: proxy (browser 127.0.0.1:8377 → readability)`.
+
+**`jina`** — [Jina AI Reader](https://jina.ai/reader/) fetches with headless
+Chrome or `curl-impersonate` and returns Markdown. Free without a key at 20
+req/min; Apache-2.0 and self-hostable
+([jina-ai/reader](https://github.com/jina-ai/reader)). Optional `JINA_API_KEY`
+raises limits. We send `DNT: 1` so Jina does not cache or log the request, but
+the URL is still disclosed to a third party — hence opt-in, and why
+`PI_SEARCH_PROXY_SKIP_HOSTS` exists for hosts that refuse hosted readers anyway.
+
+**`browser`** — [browser-fetch](https://github.com/slim-bean/browser-fetch): a
+separate Go service that drives a real, user-launched Chrome over CDP and
+returns rendered HTML, which then goes through the normal Readability →
+Turndown pipeline. Nothing leaves your network. It is the most capable option: because
+the profile persists and the window is visible, a human can sign in or clear an
+interactive challenge once, and later fetches reuse those cookies (measured:
+~1-2 s per page afterwards).
+
+```bash
+PI_SEARCH_FETCH_PROXY=browser
+PI_SEARCH_BROWSER_URL=http://127.0.0.1:8377   # or your VM's private IP
+PI_SEARCH_BROWSER_TOKEN=…                     # matches the gateway's -token
+PI_SEARCH_BROWSER_TIMEOUT_MS=60000            # optional
+PI_SEARCH_BROWSER_ASSIST_MS=90000             # optional: hold challenges for a human
+```
+
 ## Install
 
 This is a pi package. Add it to your pi `settings.json`:
@@ -159,6 +226,8 @@ src/
     providers/          # one file per backend (anthropic, openai, gemini, tavily, brave, exa)
   fetch/
     fetch.ts            # web fetch: content negotiation, alternate link, Readability + Turndown, body fallback, llms.txt probe
+    blocked.ts          # bot-protection detection + the LLM-facing explanation
+    proxies/            # reader proxies: types.ts, jina.ts, browser.ts, index.ts (selection + host routing)
 ```
 
 ### Adding a provider

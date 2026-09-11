@@ -16,6 +16,9 @@
  *    pages, card grids), convert the largest `<main>`/`<article>`/body instead.
  *  - `llms.txt` hint: probes `<origin>/llms.txt` once per origin so the agent
  *    learns when a site has a curated machine-readable docs index.
+ *  - Bot protection: 403s and 200-with-JS-challenge pages become an honest,
+ *    actionable error (see blocked.ts) instead of empty "content". Optionally
+ *    retried through a reader proxy (see proxy.ts).
  *  - JSON / plain text / Markdown pass through unchanged.
  */
 import { Readability } from "@mozilla/readability";
@@ -25,11 +28,32 @@ import TurndownService from "turndown";
 // @ts-expect-error
 import { gfm } from "turndown-plugin-gfm";
 
+import {
+  BlockedError,
+  blockedMessage,
+  classifyBlockedResponse,
+  detectChallengePage,
+  type BlockInfo,
+} from "./blocked";
+import { isProxyHost, ProxyTargetBlockedError, selectedProxy, skipsHostedProxies } from "./proxies";
+
 const DEFAULT_MAX_CHARS = 50_000;
-const USER_AGENT = "pi-search/0.4 (+https://github.com/earendil-works/pi)";
+const USER_AGENT = "pi-search/0.5 (+https://github.com/earendil-works/pi)";
 const LLMS_TXT_TIMEOUT_MS = 3_000;
-/** Readability output shorter than this fraction of the body text is treated as a miss. */
-const READABILITY_MIN_RATIO = 0.2;
+/**
+ * Readability-quality thresholds.
+ *
+ * The failure to catch is Readability latching onto a widget and returning
+ * almost nothing: one JS-heavy marketing page yielded 118 characters out of
+ * 49k. It is NOT "returned a small fraction of the page" -- a comment-heavy
+ * discussion thread or a long-form article legitimately extracts 5-12% of body
+ * text, the rest being nav, comments and footers. So the primary test is
+ * absolute length, with a very low ratio guard for huge pages where even 800
+ * characters would be noise.
+ */
+const READABILITY_MIN_CHARS = 800;
+const READABILITY_MIN_RATIO = 0.02;
+/** Below this much body text, trust Readability regardless. */
 const BODY_FALLBACK_MIN_CHARS = 1_500;
 
 export type FetchFormat = "markdown" | "text" | "html";
@@ -40,6 +64,7 @@ export type Extractor =
   | "readability" // HTML → Readability (→ Turndown for markdown format)
   | "body" // Readability kept too little; converted <main>/<article>/body
   | "naive" // tag-stripping fallback
+  | "proxy" // direct fetch was blocked; content came via a reader proxy
   | "raw"; // passed through unchanged (JSON, text, or format=html)
 
 export interface FetchOptions {
@@ -61,6 +86,10 @@ export interface FetchResult {
   excerpt: string | null;
   /** URL of the origin's llms.txt, when one exists. */
   llmsTxt: string | null;
+  /** Reader proxy that supplied the content, when extractor === "proxy". */
+  proxy: string | null;
+  /** How proxy-returned HTML was reduced, when the proxy returned markup. */
+  proxyExtractor: Extractor | null;
   content: string;
   length: number;
   truncated: boolean;
@@ -92,7 +121,11 @@ async function doFetch(url: string, format: FetchFormat, signal?: AbortSignal): 
     return await fetch(url, {
       signal,
       redirect: "follow",
-      headers: { Accept: ACCEPT[format], "User-Agent": USER_AGENT },
+      headers: {
+        Accept: ACCEPT[format],
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": USER_AGENT,
+      },
     });
   } catch (e) {
     throw new Error(`web_fetch: failed to fetch ${url} — ${(e as Error).message}`);
@@ -142,6 +175,15 @@ function naiveStripHtml(html: string): string {
 }
 
 const normalizeWs = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+/**
+ * Count fenced-code candidates. Used to detect Readability dropping code: docs
+ * pages that render snippets in tab widgets can lose the command entirely,
+ * which is the single worst failure for a coding agent.
+ */
+function countCodeBlocks(html: string): number {
+  return (html.match(/<pre[\s>]/gi) || []).length;
+}
 
 /** `title:` from a leading YAML front-matter block, if present. */
 function frontMatterTitle(markdown: string): string | null {
@@ -235,11 +277,21 @@ function extractFromHtml(html: string, url: string, format: Exclude<FetchFormat,
   }
 
   const articleText = article?.textContent?.trim() ?? "";
-  const readabilityOk =
-    articleText.length > 0 &&
-    (bodyTextLen < BODY_FALLBACK_MIN_CHARS || articleText.length >= bodyTextLen * READABILITY_MIN_RATIO);
+  // The body candidate is computed up front so Readability can be compared
+  // against it, not just judged on its own.
+  const { root, textLength } = pickContentRoot(doc);
 
-  if (article && readabilityOk) {
+  const longEnough =
+    articleText.length > 0 &&
+    (bodyTextLen < BODY_FALLBACK_MIN_CHARS ||
+      (articleText.length >= READABILITY_MIN_CHARS &&
+        articleText.length >= bodyTextLen * READABILITY_MIN_RATIO));
+
+  // Readability silently discards tab-widget code blocks on some docs sites.
+  // If the page has code and Readability kept none, prefer the body candidate.
+  const losesCode = countCodeBlocks(root.innerHTML) > 0 && countCodeBlocks(article?.content ?? "") === 0;
+
+  if (article && longEnough && !losesCode) {
     return {
       content:
         format === "markdown"
@@ -254,7 +306,6 @@ function extractFromHtml(html: string, url: string, format: Exclude<FetchFormat,
     };
   }
 
-  const { root, textLength } = pickContentRoot(doc);
   if (textLength >= BODY_FALLBACK_MIN_CHARS || (textLength > 0 && articleText.length === 0)) {
     absolutizeUrls(root, url);
     return {
@@ -333,15 +384,36 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
   // Fire the llms.txt probe alongside the main fetch; it's cached per origin.
   const llmsTxtPromise = probeLlmsTxt(new URL(url).origin, signal);
 
-  const response = await doFetch(url, format, signal);
-  if (!response.ok) {
-    throw new Error(`web_fetch: ${url} returned HTTP ${response.status}`);
-  }
+  // Hosts known to block are routed straight to the proxy: the direct attempt
+  // would only burn a round trip and hand back a challenge page.
+  const preRouted = Boolean(selectedProxy()) && isProxyHost(new URL(url).hostname);
 
-  const finalUrl = response.url || url;
-  const contentType = (response.headers.get("content-type") || "").toLowerCase();
-  const cleanType = contentType.split(";")[0].trim();
-  const rawText = await response.text();
+  let blocked: BlockInfo | null = preRouted
+    ? { vendor: "known-blocking host", status: 0, challenge: false, preRouted: true }
+    : null;
+
+  let response: Response | null = null;
+  let finalUrl = url;
+  let contentType = "";
+  let cleanType = "";
+  let rawText = "";
+
+  if (!blocked) {
+    response = await doFetch(url, format, signal);
+    finalUrl = response.url || url;
+    contentType = (response.headers.get("content-type") || "").toLowerCase();
+    cleanType = contentType.split(";")[0].trim();
+    if (!response.ok) {
+      blocked = classifyBlockedResponse(response);
+      if (!blocked) throw new Error(`web_fetch: ${url} returned HTTP ${response.status}`);
+    } else {
+      rawText = await response.text();
+      if (isHtmlType(contentType)) {
+        const vendor = detectChallengePage(rawText, response.headers);
+        if (vendor) blocked = { vendor, status: response.status, challenge: true };
+      }
+    }
+  }
 
   let content: string;
   let extractor: Extractor = "raw";
@@ -349,8 +421,18 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
   let byline: string | null = null;
   let excerpt: string | null = null;
   let siteName: string | null = null;
+  let proxy: string | null = null;
+  let proxyExtractor: Extractor | null = null;
 
-  if (isMarkdownType(contentType)) {
+  if (blocked) {
+    const viaProxy = await fetchViaProxy(finalUrl, blocked, format, signal);
+    content = viaProxy.content;
+    title = viaProxy.title;
+    extractor = "proxy";
+    proxy = viaProxy.proxy;
+    proxyExtractor = viaProxy.via;
+    if (viaProxy.url) finalUrl = viaProxy.url;
+  } else if (isMarkdownType(contentType)) {
     content = rawText;
     extractor = "markdown";
     title = frontMatterTitle(rawText);
@@ -402,8 +484,80 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
     siteName,
     excerpt,
     llmsTxt,
+    proxy,
+    proxyExtractor,
     content,
     length: content.length,
     truncated,
   };
+}
+
+/**
+ * Direct fetch was blocked. Retry through the configured reader proxy, or throw
+ * a BlockedError whose message tells the model what to do instead.
+ */
+async function fetchViaProxy(
+  url: string,
+  blocked: BlockInfo,
+  format: FetchFormat,
+  signal?: AbortSignal,
+): Promise<{
+  content: string;
+  title: string | null;
+  url: string | null;
+  proxy: string;
+  via: Extractor | null;
+}> {
+  const proxy = selectedProxy();
+  if (!proxy) throw new BlockedError(url, blocked, blockedMessage(url, blocked, false));
+
+  // Some hosts refuse hosted readers as firmly as they refuse us; don't
+  // disclose the URL to a third party for nothing. A self-hosted browser is
+  // still worth trying, since a real browser often gets through where a hosted
+  // reader does not.
+  if (proxy.id !== "browser" && skipsHostedProxies(new URL(url).hostname)) {
+    throw new BlockedError(url, blocked, blockedMessage(url, blocked, false));
+  }
+
+  const why = proxy.unavailable();
+  if (why) {
+    throw new BlockedError(url, blocked, `${blockedMessage(url, blocked, false)} (proxy unavailable: ${why})`);
+  }
+
+  try {
+    const r = await proxy.fetch(url, signal);
+
+    // Markdown-returning proxies (Jina) are used as-is.
+    if (r.content !== undefined) {
+      return { content: r.content, title: r.title, url: r.url, proxy: proxy.label(), via: null };
+    }
+
+    // HTML-returning proxies (browser gateway) go through the same pipeline as
+    // a direct fetch, so the model sees identically shaped output.
+    const html = r.html ?? "";
+    if (format === "html") {
+      return { content: html, title: r.title, url: r.url, proxy: proxy.label(), via: "raw" };
+    }
+    const extracted = extractFromHtml(html, r.url ?? url, format);
+    return {
+      content: extracted.content,
+      title: r.title ?? extracted.title,
+      url: r.url,
+      proxy: proxy.label(),
+      via: extracted.extractor,
+    };
+  } catch (e) {
+    if (e instanceof ProxyTargetBlockedError) {
+      throw new BlockedError(
+        url,
+        { ...blocked, status: e.status, vendor: e.vendor ?? blocked.vendor },
+        blockedMessage(url, blocked, true),
+      );
+    }
+    throw new BlockedError(
+      url,
+      blocked,
+      `${blockedMessage(url, blocked, true)} (proxy error: ${(e as Error).message})`,
+    );
+  }
 }
