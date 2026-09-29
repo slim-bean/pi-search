@@ -5,6 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { resolveProvider, listAvailable, getProvider, PROVIDERS } from "./search/registry";
 import { formatSearchResponse } from "./search/format";
 import { fetchReadable } from "./fetch/fetch";
+import { registerBrowserRead } from "./fetch/browser-read";
 import type { SearchProvider } from "./search/types";
 import {
   setKeySource,
@@ -36,12 +37,23 @@ const fetchParameters = Type.Object({
       description:
         "Output format (default markdown). markdown: native Markdown when the server offers it, " +
         "otherwise the main article converted to Markdown with links preserved. text: plain text. " +
-        "html: the raw HTML (for <head> metadata, scripts, etc).",
+        "html: raw response HTML, or rendered DOM HTML when a browser proxy is used.",
     }),
   ),
 });
 
 export default function (pi: ExtensionAPI) {
+  pi.events.on("pi-search:capabilities:v1", (data) => {
+    (data as { result?: { browserOnly: boolean } }).result = { browserOnly: true };
+  });
+  let browserReadRegistered = false;
+  pi.on("session_start", () => {
+    if (!browserReadRegistered && pi.getAllTools().some((tool) => tool.name === "browser_dom")) {
+      registerBrowserRead(pi);
+      browserReadRegistered = true;
+    }
+  });
+
   pi.registerFlag("search-provider", {
     description: "Web search provider id (auto|anthropic|openai|gemini|tavily|brave|exa)",
     type: "string",
@@ -68,7 +80,7 @@ export default function (pi: ExtensionAPI) {
     parameters: searchParameters,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const { provider, key } = await resolveProvider(ctx as ExtensionContext, selected);
-      onUpdate?.({ content: [{ type: "text", text: `Searching via ${provider.label}…` }] });
+      onUpdate?.({ content: [{ type: "text", text: `Searching via ${provider.label}…` }], details: {} });
 
       const resp = await provider.search(
         params.query,
@@ -93,7 +105,9 @@ export default function (pi: ExtensionAPI) {
       "is extracted and converted to Markdown with headings, code blocks and links " +
       "intact. JSON and plain text are returned as-is. Reports the site's llms.txt " +
       "when one exists. Sites behind bot protection return a clear error with " +
-      "alternatives rather than fake content. Works for docs, articles, GitHub, and APIs.",
+      "alternatives rather than fake content. Works for docs, articles, GitHub, and APIs. " +
+      "In browser-only mode, reads a separate rendered page through the shared Chrome profile; " +
+      "native content negotiation and llms.txt probing are disabled. Use browser_read for the current live tab.",
     promptSnippet: "Fetch a URL and return it as clean Markdown",
     promptGuidelines: [
       "Use web_fetch to read the full content of a page, especially URLs returned by web_search.",
@@ -103,7 +117,7 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: fetchParameters,
     async execute(_toolCallId, params, signal, onUpdate) {
-      onUpdate?.({ content: [{ type: "text", text: `Fetching ${params.url}…` }] });
+      onUpdate?.({ content: [{ type: "text", text: `Fetching ${params.url}…` }], details: {} });
       const result = await fetchReadable(params.url, {
         maxChars: params.maxChars,
         format: params.format,

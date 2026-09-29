@@ -29,6 +29,9 @@ docs.
   strip. Also `probeLlmsTxt(origin)` (cached per origin). The `Extractor`
   union documents which path produced the content. Originally ported from
   2h-team/wiki `fetchTools.ts`.
+- `src/fetch/browser-read.ts` — conditional `browser_read` tool (when pi-devtools
+  is present); reads its live snapshot via `pi-devtools:snapshot:v1`, then invokes
+  the exported pure `extractFromHtml`. No refetch/probe and sequential execution.
 - `src/fetch/blocked.ts` — bot-protection detection: `classifyBlockedResponse`
   (401/403/429/503 + vendor from headers), `detectChallengePage` (200 bodies
   that are JS-challenge, captcha or WAF interstitials),
@@ -54,6 +57,10 @@ docs.
   existing pi credentials, and declare `piProvider` (the pi provider id backing
   them) so `/search-key` can target them. API providers (`tavily`, `brave`,
   `exa`) use `envKey(...)` only.
+- Credential inspection supports legacy authStorage and current ModelRegistry
+  methods. If credential type cannot be established, fall back to explicit env keys
+  rather than forwarding an unknown token. Current `/search-key` candidates are
+  configured non-OAuth model providers (legacy pi lists stored API-key providers).
 - OAuth (subscription) logins are never forwarded as API keys. Users with an
   OAuth-backed provider point at an API-key credential via `/search-key` or
   `PI_SEARCH_KEY_PROVIDER_<PROVIDER>`.
@@ -68,6 +75,10 @@ docs.
   when asked for Markdown. Both were observed in production.
 - Readability mutates the DOM; parse a clone so the body fallback sees the
   original document.
+- `PI_SEARCH_FETCH_MODE=browser-only` (or `FetchOptions.mode`) is fail-closed:
+  force browserProxy regardless of host/fallback configuration, and make no target,
+  alternate-link, or llms.txt direct requests. Errors must not suggest silent direct
+  fallback. Standalone `auto` remains the default.
 - Never let the `llms.txt` probe throw or block: it is best-effort, cached,
   and bounded by `LLMS_TXT_TIMEOUT_MS`.
 - Don't try to defeat bot protection with browser User-Agents or spoofed
@@ -83,7 +94,9 @@ docs.
 - To add a proxy: implement `ReaderProxy` in `src/fetch/proxies/`, append to
   `PROXIES` in `index.ts`. Throw `ProxyTargetBlockedError` when the *target*
   refused the proxy, plain `Error` when the proxy itself failed; the two produce
-  different advice to the model.
+  different advice to the model. Browser gateway authentication supports
+  `PI_SEARCH_BROWSER_TOKEN_FILE` (takes precedence over the token env var, reread
+  per request). Refuse gateway redirects; never send the token to a redirect target.
 - Extraction thresholds in `fetch.ts` are tuned against real pages, not
   intuition: Readability legitimately returns 5–12% of body text on comment-heavy
   pages (measured 4.6% on a discussion thread, 12.5% on a long-form article),
@@ -95,6 +108,10 @@ docs.
   them. Re-run the fixture checks in Testing below after upgrading.
 
 ## Testing
+
+`npm test` runs mocked transport/extraction/credential tests; `npm run typecheck`
+resolves peers against the installed pi. Shared-browser live tests are in
+`../pi-assistant/test/live.ts` (synthetic pages, temporary profile, no model calls).
 
 End-to-end (requires a configured provider key):
 
@@ -122,5 +139,4 @@ non-browser clients (→ `BlockedError`), a publisher behind a WAF that 403s the
 (succeeds with `PI_SEARCH_FETCH_PROXY=jina` or `=browser`),
 `grafana.com/tutorials/play-with-grafana-mimir/` (must contain
 `docker compose up -d` — the tab-widget code-block regression). Type-check with
-`npx -y -p typescript@5 tsc --noEmit -p tsconfig.json`; errors about
-`@earendil-works/*` / `typebox` are expected (pi-provided peers).
+`npm run typecheck` (or set `PI_ROOT` to a different installed pi).
