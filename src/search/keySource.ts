@@ -39,13 +39,28 @@ export function getKeySource(piProvider: string): string | undefined {
   return trimmed || undefined;
 }
 
-/** List pi provider ids that have a stored api-key credential. */
+// Older pi exposed authStorage; current pi exposes non-secret registry methods.
+interface LegacyStorage { list(): string[]; get(id: string): { type: string } | undefined }
+function legacyStorage(ctx: ExtensionContext): LegacyStorage | undefined {
+  return (ctx.modelRegistry as unknown as { authStorage?: LegacyStorage }).authStorage;
+}
+
+/** Fail closed when a credential's type cannot be checked; never forward an unknown token. */
+export function isOAuthCredential(ctx: ExtensionContext, providerId: string): boolean {
+  try {
+    const stored = legacyStorage(ctx);
+    if (stored) return stored.get(providerId)?.type === "oauth";
+    const model = ctx.modelRegistry.getAll().find((model) => model.provider === providerId);
+    return !model || ctx.modelRegistry.isUsingOAuth(model);
+  } catch { return true; }
+}
+
+/** Configured non-OAuth providers (stored API-key providers on older pi). */
 export function listApiKeyProviders(ctx: ExtensionContext): string[] {
   try {
-    return ctx.modelRegistry.authStorage
-      .list()
-      .filter((id) => ctx.modelRegistry.authStorage.get(id)?.type === "api_key");
-  } catch {
-    return [];
-  }
+    const stored = legacyStorage(ctx);
+    if (stored) return stored.list().filter((id) => stored.get(id)?.type === "api_key");
+    return [...new Set(ctx.modelRegistry.getAll().map((model) => model.provider))]
+      .filter((id) => ctx.modelRegistry.getProviderAuthStatus(id).configured && !isOAuthCredential(ctx, id));
+  } catch { return []; }
 }

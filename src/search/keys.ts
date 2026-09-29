@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getKeySource, KEY_SOURCE_ENV } from "./keySource";
+import { getKeySource, isOAuthCredential, KEY_SOURCE_ENV } from "./keySource";
 
 /** Read the first non-empty environment variable from a list. */
 export function envKey(...names: string[]): string | undefined {
@@ -8,15 +8,6 @@ export function envKey(...names: string[]): string | undefined {
     if (value && value.trim()) return value.trim();
   }
   return undefined;
-}
-
-/** True when the pi provider's stored credential is an OAuth (subscription) token. */
-function isOAuthCredential(ctx: ExtensionContext, providerId: string): boolean {
-  try {
-    return ctx.modelRegistry.authStorage.get(providerId)?.type === "oauth";
-  } catch {
-    return false;
-  }
 }
 
 /**

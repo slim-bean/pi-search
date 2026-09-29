@@ -35,7 +35,8 @@ import {
   detectChallengePage,
   type BlockInfo,
 } from "./blocked";
-import { isProxyHost, ProxyTargetBlockedError, selectedProxy, skipsHostedProxies } from "./proxies";
+import { isProxyHost, ProxyTargetBlockedError, selectedProxy, skipsHostedProxies, type ReaderProxy } from "./proxies";
+import { browserProxy } from "./proxies/browser";
 
 const DEFAULT_MAX_CHARS = 50_000;
 const USER_AGENT = "pi-search/0.5 (+https://github.com/earendil-works/pi)";
@@ -67,7 +68,10 @@ export type Extractor =
   | "proxy" // direct fetch was blocked; content came via a reader proxy
   | "raw"; // passed through unchanged (JSON, text, or format=html)
 
+export type FetchMode = "auto" | "browser-only";
 export interface FetchOptions {
+  /** Overrides PI_SEARCH_FETCH_MODE (default auto). browser-only fails closed. */
+  mode?: FetchMode;
   maxChars?: number;
   format?: FetchFormat;
   signal?: AbortSignal;
@@ -259,7 +263,7 @@ function findMarkdownAlternate(doc: Document, baseUrl: string): string | null {
   }
 }
 
-function extractFromHtml(html: string, url: string, format: Exclude<FetchFormat, "html">): Extracted {
+export function extractFromHtml(html: string, url: string, format: Exclude<FetchFormat, "html">): Extracted {
   const virtualConsole = new VirtualConsole(); // silence jsdom CSS/JS parse noise
   const dom = new JSDOM(html, { url, virtualConsole });
   const doc = dom.window.document;
@@ -381,12 +385,16 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
   const format: FetchFormat = opts.format ?? "markdown";
   const { signal } = opts;
 
-  // Fire the llms.txt probe alongside the main fetch; it's cached per origin.
-  const llmsTxtPromise = probeLlmsTxt(new URL(url).origin, signal);
+  const mode = opts.mode ?? process.env.PI_SEARCH_FETCH_MODE?.trim() ?? "auto";
+  if (mode !== "auto" && mode !== "browser-only") throw new Error(`Invalid PI_SEARCH_FETCH_MODE: ${mode}`);
+  const browserOnly = mode === "browser-only";
+  // No ancillary direct requests in browser-only mode. Discovery is optional,
+  // and adding an extra browser navigation to every origin isn't worth it.
+  const llmsTxtPromise = browserOnly ? Promise.resolve(null) : probeLlmsTxt(new URL(url).origin, signal);
 
   // Hosts known to block are routed straight to the proxy: the direct attempt
   // would only burn a round trip and hand back a challenge page.
-  const preRouted = Boolean(selectedProxy()) && isProxyHost(new URL(url).hostname);
+  const preRouted = browserOnly || (Boolean(selectedProxy()) && isProxyHost(new URL(url).hostname));
 
   let blocked: BlockInfo | null = preRouted
     ? { vendor: "known-blocking host", status: 0, challenge: false, preRouted: true }
@@ -425,13 +433,14 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
   let proxyExtractor: Extractor | null = null;
 
   if (blocked) {
-    const viaProxy = await fetchViaProxy(finalUrl, blocked, format, signal);
+    const viaProxy = await fetchViaProxy(finalUrl, blocked, format, signal, browserOnly ? browserProxy : undefined);
     content = viaProxy.content;
     title = viaProxy.title;
     extractor = "proxy";
     proxy = viaProxy.proxy;
     proxyExtractor = viaProxy.via;
     if (viaProxy.url) finalUrl = viaProxy.url;
+    if (browserOnly) cleanType = "text/html"; // rendered document, not the wire response
   } else if (isMarkdownType(contentType)) {
     content = rawText;
     extractor = "markdown";
@@ -501,6 +510,7 @@ async function fetchViaProxy(
   blocked: BlockInfo,
   format: FetchFormat,
   signal?: AbortSignal,
+  requiredProxy?: ReaderProxy,
 ): Promise<{
   content: string;
   title: string | null;
@@ -508,7 +518,7 @@ async function fetchViaProxy(
   proxy: string;
   via: Extractor | null;
 }> {
-  const proxy = selectedProxy();
+  const proxy = requiredProxy ?? selectedProxy();
   if (!proxy) throw new BlockedError(url, blocked, blockedMessage(url, blocked, false));
 
   // Some hosts refuse hosted readers as firmly as they refuse us; don't
@@ -521,6 +531,7 @@ async function fetchViaProxy(
 
   const why = proxy.unavailable();
   if (why) {
+    if (requiredProxy) throw new Error(`Browser-only fetch unavailable: ${why}. No direct request was attempted.`);
     throw new BlockedError(url, blocked, `${blockedMessage(url, blocked, false)} (proxy unavailable: ${why})`);
   }
 
@@ -547,6 +558,7 @@ async function fetchViaProxy(
       via: extracted.extractor,
     };
   } catch (e) {
+    if (requiredProxy) throw new Error(`Browser-only fetch failed: ${(e as Error).message}. No direct fallback was attempted.`);
     if (e instanceof ProxyTargetBlockedError) {
       throw new BlockedError(
         url,

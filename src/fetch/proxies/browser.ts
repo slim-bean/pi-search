@@ -15,6 +15,7 @@
  *   PI_SEARCH_BROWSER_TIMEOUT_MS=60000     (optional)
  *   PI_SEARCH_BROWSER_ASSIST_MS=…          (optional: hold challenges for a human)
  */
+import { readFileSync } from "node:fs";
 import { ProxyTargetBlockedError, type ProxyResult, type ReaderProxy } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -75,7 +76,9 @@ export const browserProxy: ReaderProxy = {
 
     const budget = timeoutMs();
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const token = process.env.PI_SEARCH_BROWSER_TOKEN?.trim();
+    const tokenFile = process.env.PI_SEARCH_BROWSER_TOKEN_FILE?.trim();
+    const token = (tokenFile ? readFileSync(tokenFile, "utf8") : process.env.PI_SEARCH_BROWSER_TOKEN)?.trim();
+    if (token && /[\r\n]/.test(token)) throw new Error("Browser gateway token contains an embedded newline");
     if (token) headers.Authorization = `Bearer ${token}`;
 
     const body: Record<string, unknown> = { url, timeout_ms: budget };
@@ -91,6 +94,7 @@ export const browserProxy: ReaderProxy = {
     try {
       res = await fetch(`${base}/fetch`, {
         method: "POST",
+        redirect: "error",
         headers,
         body: JSON.stringify(body),
         signal: combined,

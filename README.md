@@ -101,8 +101,8 @@ Override the foundation model used for search with `PI_SEARCH_MODEL`
 3. **Readability → Turndown.** Otherwise the main article is isolated with
    Mozilla Readability and converted to GitHub-flavoured Markdown.
    `Extractor: readability`.
-4. **Body fallback.** When Readability keeps under 20% of the page text
-   (marketing pages, card grids), the largest `<main>`/`<article>`/`<body>` is
+4. **Body fallback.** When Readability returns too little content (an absolute
+   length guard plus a low ratio floor), or loses every code block, the largest `<main>`/`<article>`/`<body>` is
    converted instead, with nav/header/footer stripped. `Extractor: body`.
 5. **Naive strip** as a last resort. `Extractor: naive`.
 
@@ -186,9 +186,47 @@ interactive challenge once, and later fetches reuse those cookies (measured:
 PI_SEARCH_FETCH_PROXY=browser
 PI_SEARCH_BROWSER_URL=http://127.0.0.1:8377   # or your VM's private IP
 PI_SEARCH_BROWSER_TOKEN=…                     # matches the gateway's -token
+PI_SEARCH_BROWSER_TOKEN_FILE=/run/secrets/browser-fetch/token  # optional; takes precedence
 PI_SEARCH_BROWSER_TIMEOUT_MS=60000            # optional
 PI_SEARCH_BROWSER_ASSIST_MS=90000             # optional: hold challenges for a human
 ```
+
+### Browser-only page retrieval
+
+```bash
+PI_SEARCH_FETCH_MODE=browser-only
+PI_SEARCH_BROWSER_URL=http://127.0.0.1:19377
+PI_SEARCH_BROWSER_TOKEN=…
+```
+
+`PI_SEARCH_FETCH_MODE` is `auto` (existing behavior, default) or `browser-only`.
+Browser-only always selects the browser gateway, regardless of the fallback proxy
+or host lists. It **never** directly fetches the target, an alternate Markdown URL,
+or `llms.txt`, and never falls back if the gateway is missing or fails. It returns
+rendered page content, not the wire response: even `format: html` is rendered DOM,
+and native JSON/plain-text pages are processed from their browser representation.
+This setting only governs `web_fetch`, not search-provider API calls or other tools.
+The same gateway URL works for remote/container browsers; token files are read per
+request and gateway redirects are refused. Lifecycle and CDP connections remain the
+responsibility of pi-devtools/pi-assistant, not this extraction tool.
+
+The extension advertises `{browserOnly: true}` on `pi-search:capabilities:v1`
+(by synchronously assigning the request's `result`) so coordinators can reject
+older versions instead of silently getting direct HTTP behavior.
+
+The module API also accepts `fetchReadable(url, {mode: "browser-only"})`; explicit
+options override the environment. Browser lifecycle remains external: run a gateway
+and Chrome yourself, or use pi-assistant for lazy managed startup.
+
+### Read the current live tab
+
+When pi-devtools is also loaded, pi-search registers **`browser_read(maxChars?)`**.
+It obtains the selected tab's `{html,url,title}` through the versioned
+`pi-devtools:snapshot:v1` event channel and uses the same HTML extraction as
+`web_fetch`, without any network fetch, navigation, or llms.txt probe. This preserves
+current interactive state. For email/app controls or content article extraction
+omits, use `browser_dom`. The extractor is also exported as `extractFromHtml` from
+`src/fetch/fetch.ts` for local integrations.
 
 ## Install
 
@@ -229,6 +267,16 @@ src/
     blocked.ts          # bot-protection detection + the LLM-facing explanation
     proxies/            # reader proxies: types.ts, jina.ts, browser.ts, index.ts (selection + host routing)
 ```
+
+### Tests
+
+```bash
+npm test            # mocked transport tests; no keys or live websites
+npm run typecheck   # resolves peer types against installed pi
+```
+
+The shared-browser live test is in `../pi-assistant/test/live.ts`; it uses an isolated
+profile and synthetic pages (no model calls or personal accounts).
 
 ### Adding a provider
 
