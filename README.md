@@ -2,7 +2,7 @@
 
 Web search and readable web fetch tools for the [pi](https://github.com/earendil-works/pi) coding agent.
 
-Adds two LLM-callable tools:
+Adds three LLM-callable tools (plus `browser_read` when pi-devtools is loaded):
 
 - **`web_search`** — search the web through a pluggable backend. Returns a
   synthesized answer (foundation-model and Tavily providers) plus source URLs.
@@ -11,7 +11,10 @@ Adds two LLM-callable tools:
   type=text/markdown>`, otherwise extracts the main article (Mozilla
   Readability) and converts it with Turndown so headings, code blocks and
   links survive. Reports the site's `llms.txt` when one exists. JSON and plain
-  text pass through.
+  text pass through. Optional `screenshot: true` also attaches the first segment
+  of a browser-backed visual snapshot.
+- **`web_fetch_screenshot`** — retrieve another segment of that frozen snapshot,
+  without navigating or refetching the website.
 
 ## Providers
 
@@ -89,7 +92,7 @@ Override the foundation model used for search with `PI_SEARCH_MODEL`
 
 ## web_fetch
 
-`web_fetch(url, maxChars?, format?)` is built for agents, not browsers. In order:
+`web_fetch(url, maxChars?, format?, screenshot?)` is built for agents, not browsers. For text-only retrieval, in order:
 
 1. **Content negotiation.** Sends `Accept: text/markdown;q=1.0, text/html;q=0.8, …`
    (same as Claude Code and OpenCode). Docs sites that publish Markdown for
@@ -109,8 +112,9 @@ Override the foundation model used for search with `PI_SEARCH_MODEL`
 JSON, plain text and other non-HTML types pass through unchanged
 (`Extractor: raw`). Redirects are followed and the final URL is reported.
 
-Every result also probes `<origin>/llms.txt` once per origin (3 s timeout,
-cached) and, when found, adds an `llms.txt: <url>` line so the model can
+Unless browser-only retrieval is used (including explicit screenshots), results
+also probe `<origin>/llms.txt` once per origin (3 s timeout, cached) and, when found,
+add an `llms.txt: <url>` line so the model can
 discover the site's curated docs index.
 
 | `format` | Behaviour |
@@ -210,13 +214,51 @@ The same gateway URL works for remote/container browsers; token files are read p
 request and gateway redirects are refused. Lifecycle and CDP connections remain the
 responsibility of pi-devtools/pi-assistant, not this extraction tool.
 
-The extension advertises `{browserOnly: true}` on `pi-search:capabilities:v1`
+The extension advertises `{browserOnly: true, screenshots: true}` on `pi-search:capabilities:v1`
 (by synchronously assigning the request's `result`) so coordinators can reject
 older versions instead of silently getting direct HTTP behavior.
 
 The module API also accepts `fetchReadable(url, {mode: "browser-only"})`; explicit
 options override the environment. Browser lifecycle remains external: run a gateway
 and Chrome yourself, or use pi-assistant for lazy managed startup.
+
+### Paginated visual snapshots
+
+```ts
+web_fetch({ url: "https://example.com/listing", screenshot: true })
+// Returns extracted text + the first image, with a capture ID and segment count.
+web_fetch_screenshot({ captureId: "<returned capture ID>", segment: 2 })
+```
+
+Screenshots **always use browser-fetch**, regardless of `PI_SEARCH_FETCH_MODE`,
+proxy selection or host lists. Configure `PI_SEARCH_BROWSER_URL` and its gateway
+credential as above; root, driver and reader credentials can all create captures.
+No direct target/alternate/llms.txt requests occur, and missing/old gateways fail
+explicitly instead of silently returning text only. No pi-devtools dependency is
+needed. Ordinary calls without `screenshot: true` are unchanged.
+
+The gateway captures one bounded full-page bitmap at a 1280 × 900 CSS-pixel viewport
+and device scale 1, then crops it into vertical segments **before** any downsizing:
+
+- At most **1280 × 1400 pixels / 384 KiB JPEG** per returned image.
+- **100 CSS-pixel overlap**, one-based segment numbers, at most 10 segments.
+- Captures stop at **12,000 CSS pixels**; height/horizontal clipping is reported.
+- Immutable segments expire after **10 minutes** or gateway restart. Retrieve them
+  using the **same credential class** that created the capture; root cannot read a
+  reader capture by ID. Expiration never triggers automatic navigation/recapture.
+- Storage is memory-only and bounded (32 captures / 64 MiB); a full store returns
+  an explicit error. The gateway must have `-block-media=false` (the default).
+
+The tool returns real image attachments for a **vision-capable model**, not base64
+in prose. Exact context cost depends on the model; only the requested segment is
+attached. The extension itself needs no model credential to fetch/capture pages
+(the gateway credential is separate). A local worker model must support image
+inputs and be configured as such in pi to interpret the screenshots.
+
+This is a frozen visual snapshot, not site pagination: the gateway briefly waits
+for visible images but does not scroll, load every lazy image, click galleries or
+capture nested scrolling regions. For Marketplace gallery slides or an already-open
+page, use pi-devtools' interactive tools and `browser_screenshot` instead.
 
 ### Read the current live tab
 
@@ -254,7 +296,7 @@ pi -e ./src/index.ts
 
 ```
 src/
-  index.ts              # registers web_search + web_fetch tools, /search-provider + /search-key commands, --search-provider flag
+  index.ts              # registers search/fetch/screenshot tools, commands, --search-provider flag
   search/
     types.ts            # SearchProvider interface, SearchResult/SearchResponse
     registry.ts         # provider list, auto-detect, selection
@@ -265,15 +307,24 @@ src/
   fetch/
     fetch.ts            # web fetch: content negotiation, alternate link, Readability + Turndown, body fallback, llms.txt probe
     blocked.ts          # bot-protection detection + the LLM-facing explanation
+    screenshot.ts       # screenshot protocol validation + model-facing presentation
+    screenshot-tool.ts  # frozen capture continuation tool
     proxies/            # reader proxies: types.ts, jina.ts, browser.ts, index.ts (selection + host routing)
 ```
 
 ### Tests
 
 ```bash
-npm test            # mocked transport tests; no keys or live websites
-npm run typecheck   # resolves peer types against installed pi
+npm test                       # mocked tests, including tool registration; installed pi peers, no auth reads
+npm run typecheck              # resolves peer types against installed pi
+npm run test:live:screenshot    # builds ../browser-fetch; isolated headless Chrome + synthetic pages
 ```
+
+The screenshot live test launches a temporary profile and gateway, exercises the
+registered tools and the gateway's live screenshot test, then cleans up. No model
+calls, pi sessions or user auth files are involved. Set `CHROME_PATH` for a nonstandard
+Chrome installation, `PI_ROOT` for a nonstandard pi install, and optionally
+`SCREENSHOT_TEST_OUTPUT_DIR=/tmp/visual-test` to retain synthetic JPEGs/manifests.
 
 The shared-browser live test is in `../pi-assistant/test/live.ts`; it uses an isolated
 profile and synthetic pages (no model calls or personal accounts).

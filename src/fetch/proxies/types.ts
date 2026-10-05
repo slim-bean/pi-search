@@ -7,6 +7,8 @@
  * identical to a direct fetch.
  */
 
+import type { ScreenshotSegment } from "../screenshot";
+
 export interface ProxyResult {
   title: string | null;
   /** Final URL as seen by the proxy, if reported. */
@@ -15,6 +17,7 @@ export interface ProxyResult {
   content?: string;
   /** Rendered HTML, when the proxy returns raw markup. */
   html?: string;
+  screenshot?: ScreenshotSegment;
 }
 
 /** The proxy reached the target, but the target refused it too. */

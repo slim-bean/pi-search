@@ -6,6 +6,8 @@ import { resolveProvider, listAvailable, getProvider, PROVIDERS } from "./search
 import { formatSearchResponse } from "./search/format";
 import { fetchReadable } from "./fetch/fetch";
 import { registerBrowserRead } from "./fetch/browser-read";
+import { registerScreenshotTool } from "./fetch/screenshot-tool";
+import { screenshotNote, screenshotImage, screenshotDetails } from "./fetch/screenshot";
 import type { SearchProvider } from "./search/types";
 import {
   setKeySource,
@@ -29,6 +31,10 @@ const searchParameters = Type.Object({
 
 const fetchParameters = Type.Object({
   url: Type.String({ description: "The http(s) URL to fetch." }),
+  screenshot: Type.Optional(Type.Boolean({
+    description: "Also capture a paginated visual snapshot through browser-fetch. Returns text plus the first image segment; " +
+      "request more with web_fetch_screenshot. Requires PI_SEARCH_BROWSER_URL; never directly fetches the target or silently omits the image.",
+  })),
   maxChars: Type.Optional(
     Type.Number({ description: "Truncate returned content to this many characters (default 50000)." }),
   ),
@@ -44,8 +50,9 @@ const fetchParameters = Type.Object({
 
 export default function (pi: ExtensionAPI) {
   pi.events.on("pi-search:capabilities:v1", (data) => {
-    (data as { result?: { browserOnly: boolean } }).result = { browserOnly: true };
+    (data as { result?: { browserOnly: boolean; screenshots: boolean } }).result = { browserOnly: true, screenshots: true };
   });
+  registerScreenshotTool(pi);
   let browserReadRegistered = false;
   pi.on("session_start", () => {
     if (!browserReadRegistered && pi.getAllTools().some((tool) => tool.name === "browser_dom")) {
@@ -107,13 +114,16 @@ export default function (pi: ExtensionAPI) {
       "when one exists. Sites behind bot protection return a clear error with " +
       "alternatives rather than fake content. Works for docs, articles, GitHub, and APIs. " +
       "In browser-only mode, reads a separate rendered page through the shared Chrome profile; " +
-      "native content negotiation and llms.txt probing are disabled. Use browser_read for the current live tab.",
+      "native content negotiation and llms.txt probing are disabled. Use browser_read for the current live tab. " +
+      "Set screenshot: true for visual inspection: always uses browser-fetch and attaches the first bounded image segment. " +
+      "Use web_fetch_screenshot to retrieve additional segments from the same frozen capture without navigating.",
     promptSnippet: "Fetch a URL and return it as clean Markdown",
     promptGuidelines: [
       "Use web_fetch to read the full content of a page, especially URLs returned by web_search.",
       "Follow links in fetched Markdown to navigate a docs site rather than searching again.",
       "If a web_fetch result reports an llms.txt, fetch it: it is a curated index of the site's machine-readable docs.",
       "For GitHub source files, prefer raw.githubusercontent.com URLs with web_fetch for clean output.",
+      "Use screenshot: true when page appearance or pictures matter. Inspect more segments only as needed; hidden gallery photos still require interactive browser tools.",
     ],
     parameters: fetchParameters,
     async execute(_toolCallId, params, signal, onUpdate) {
@@ -122,6 +132,7 @@ export default function (pi: ExtensionAPI) {
         maxChars: params.maxChars,
         format: params.format,
         signal,
+        screenshot: params.screenshot,
       });
 
       const header = [
@@ -137,9 +148,13 @@ export default function (pi: ExtensionAPI) {
         .filter(Boolean)
         .join("\n");
 
+      const { screenshot, ...textResult } = result;
       return {
-        content: [{ type: "text", text: `${header}\n\n${result.content}` }],
-        details: result,
+        content: [
+          { type: "text" as const, text: `${header}\n\n${result.content}${screenshot ? `\n\n${screenshotNote(screenshot)}` : ""}` },
+          ...(screenshot ? [screenshotImage(screenshot)] : []),
+        ],
+        details: { ...textResult, ...(screenshot ? { screenshot: screenshotDetails(screenshot) } : {}) },
       };
     },
   });

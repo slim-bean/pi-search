@@ -1,13 +1,13 @@
 # AGENTS.md
 
-pi-search is a pi extension providing two LLM tools: `web_search` (pluggable
-backend) and `web_fetch` (URL → Markdown for agents). See `README.md` for user
-docs.
+pi-search provides `web_search` (pluggable backend), `web_fetch` (URL → text,
+optional paginated screenshot), and `web_fetch_screenshot` (frozen capture segment).
+`browser_read` is conditional on pi-devtools. See `README.md` for user docs.
 
 ## Layout
 
-- `src/index.ts` — entry point. Registers both tools, the `/search-provider`
-  and `/search-key` commands, and the `--search-provider` flag. Holds the
+- `src/index.ts` — entry point. Registers search/fetch tools plus the screenshot
+  continuation helper, `/search-provider` and `/search-key`, and `--search-provider`. Holds the
   runtime `selected` provider id (flag → command → `PI_SEARCH_PROVIDER` env →
   `auto`).
 - `src/search/types.ts` — `SearchProvider` interface plus `SearchResult` /
@@ -32,6 +32,10 @@ docs.
 - `src/fetch/browser-read.ts` — conditional `browser_read` tool (when pi-devtools
   is present); reads its live snapshot via `pi-devtools:snapshot:v1`, then invokes
   the exported pure `extractFromHtml`. No refetch/probe and sequential execution.
+- `src/fetch/screenshot.ts` — browser-fetch screenshot protocol v1 validation,
+  attachment/presentation helpers (never duplicate base64 in tool details).
+  `screenshot-tool.ts` registers the continuation tool. `proxies/browser.ts` shares
+  authenticated, redirect-refusing transport for captures/continuations.
 - `src/fetch/blocked.ts` — bot-protection detection: `classifyBlockedResponse`
   (401/403/429/503 + vendor from headers), `detectChallengePage` (200 bodies
   that are JS-challenge, captcha or WAF interstitials),
@@ -46,7 +50,10 @@ docs.
 - The `browser` proxy talks to [browser-fetch](https://github.com/slim-bean/browser-fetch),
   a separate repo (Go service driving a real Chrome over CDP). The wire
   contract is `POST /fetch {url,timeout_ms,assist_ms}` →
-  `{url,title,html,status,…}`, with error `code`s `challenge` / `nav_error` /
+  `{url,title,html,status,…}`. Optional `screenshot: true` adds the first visual
+  segment; `POST /fetch/screenshot {capture_id,segment}` retrieves another without
+  navigation. The gateway owns image processing, temporary storage and expiration.
+  Error `code`s `challenge` / `nav_error` /
   `rejected_url` meaning "the target refused" (mapped to
   `ProxyTargetBlockedError`) and anything else meaning "the proxy is broken".
 
@@ -79,6 +86,11 @@ docs.
   force browserProxy regardless of host/fallback configuration, and make no target,
   alternate-link, or llms.txt direct requests. Errors must not suggest silent direct
   fallback. Standalone `auto` remains the default.
+- `FetchOptions.screenshot: true` always forces browser-only behavior (even in
+  auto mode). No direct requests or text-only fallback on old gateways. Validate
+  screenshot version, dimensions, bytes and SHA-256 before attaching. Continuation
+  errors must never trigger recapture. Real image content requires a vision model;
+  don't add model calls or credential resolution to visual retrieval.
 - Never let the `llms.txt` probe throw or block: it is best-effort, cached,
   and bounded by `LLMS_TXT_TIMEOUT_MS`.
 - Don't try to defeat bot protection with browser User-Agents or spoofed
@@ -109,8 +121,11 @@ docs.
 
 ## Testing
 
-`npm test` runs mocked transport/extraction/credential tests; `npm run typecheck`
-resolves peers against the installed pi. Shared-browser live tests are in
+`npm test` runs mocked transport/extraction/credential/tool-registration tests;
+`npm run typecheck` resolves peers against installed pi. `npm run test:live:screenshot`
+builds ../browser-fetch and uses isolated headless Chrome/synthetic pages, exercising
+registered tools without pi sessions, model calls or user auth/profile access.
+Optional `SCREENSHOT_TEST_OUTPUT_DIR` retains fixtures; `CHROME_PATH` overrides Chrome. Shared-browser live tests are in
 `../pi-assistant/test/live.ts` (synthetic pages, temporary profile, no model calls).
 
 End-to-end (requires a configured provider key):

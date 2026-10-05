@@ -36,7 +36,8 @@ import {
   type BlockInfo,
 } from "./blocked";
 import { isProxyHost, ProxyTargetBlockedError, selectedProxy, skipsHostedProxies, type ReaderProxy } from "./proxies";
-import { browserProxy } from "./proxies/browser";
+import { browserProxy, fetchBrowserPage } from "./proxies/browser";
+import type { ScreenshotSegment } from "./screenshot";
 
 const DEFAULT_MAX_CHARS = 50_000;
 const USER_AGENT = "pi-search/0.5 (+https://github.com/earendil-works/pi)";
@@ -72,6 +73,8 @@ export type FetchMode = "auto" | "browser-only";
 export interface FetchOptions {
   /** Overrides PI_SEARCH_FETCH_MODE (default auto). browser-only fails closed. */
   mode?: FetchMode;
+  /** Explicit visual capture always forces the browser gateway, with no direct requests. */
+  screenshot?: boolean;
   maxChars?: number;
   format?: FetchFormat;
   signal?: AbortSignal;
@@ -97,6 +100,7 @@ export interface FetchResult {
   content: string;
   length: number;
   truncated: boolean;
+  screenshot?: ScreenshotSegment;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +391,7 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
 
   const mode = opts.mode ?? process.env.PI_SEARCH_FETCH_MODE?.trim() ?? "auto";
   if (mode !== "auto" && mode !== "browser-only") throw new Error(`Invalid PI_SEARCH_FETCH_MODE: ${mode}`);
-  const browserOnly = mode === "browser-only";
+  const browserOnly = mode === "browser-only" || opts.screenshot === true;
   // No ancillary direct requests in browser-only mode. Discovery is optional,
   // and adding an extra browser navigation to every origin isn't worth it.
   const llmsTxtPromise = browserOnly ? Promise.resolve(null) : probeLlmsTxt(new URL(url).origin, signal);
@@ -431,9 +435,11 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
   let siteName: string | null = null;
   let proxy: string | null = null;
   let proxyExtractor: Extractor | null = null;
+  let screenshot: ScreenshotSegment | undefined;
 
   if (blocked) {
-    const viaProxy = await fetchViaProxy(finalUrl, blocked, format, signal, browserOnly ? browserProxy : undefined);
+    const viaProxy = await fetchViaProxy(finalUrl, blocked, format, signal, browserOnly ? browserProxy : undefined, opts.screenshot === true);
+    screenshot = viaProxy.screenshot;
     content = viaProxy.content;
     title = viaProxy.title;
     extractor = "proxy";
@@ -498,6 +504,7 @@ export async function fetchReadable(url: string, opts: FetchOptions = {}): Promi
     content,
     length: content.length,
     truncated,
+    ...(screenshot ? { screenshot } : {}),
   };
 }
 
@@ -511,12 +518,14 @@ async function fetchViaProxy(
   format: FetchFormat,
   signal?: AbortSignal,
   requiredProxy?: ReaderProxy,
+  screenshot = false,
 ): Promise<{
   content: string;
   title: string | null;
   url: string | null;
   proxy: string;
   via: Extractor | null;
+  screenshot?: ScreenshotSegment;
 }> {
   const proxy = requiredProxy ?? selectedProxy();
   if (!proxy) throw new BlockedError(url, blocked, blockedMessage(url, blocked, false));
@@ -536,7 +545,7 @@ async function fetchViaProxy(
   }
 
   try {
-    const r = await proxy.fetch(url, signal);
+    const r = screenshot ? await fetchBrowserPage(url, signal, true) : await proxy.fetch(url, signal);
 
     // Markdown-returning proxies (Jina) are used as-is.
     if (r.content !== undefined) {
@@ -547,7 +556,7 @@ async function fetchViaProxy(
     // a direct fetch, so the model sees identically shaped output.
     const html = r.html ?? "";
     if (format === "html") {
-      return { content: html, title: r.title, url: r.url, proxy: proxy.label(), via: "raw" };
+      return { content: html, title: r.title, url: r.url, proxy: proxy.label(), via: "raw", ...(r.screenshot ? { screenshot: r.screenshot } : {}) };
     }
     const extracted = extractFromHtml(html, r.url ?? url, format);
     return {
@@ -556,6 +565,7 @@ async function fetchViaProxy(
       url: r.url,
       proxy: proxy.label(),
       via: extracted.extractor,
+      ...(r.screenshot ? { screenshot: r.screenshot } : {}),
     };
   } catch (e) {
     if (requiredProxy) throw new Error(`Browser-only fetch failed: ${(e as Error).message}. No direct fallback was attempted.`);
