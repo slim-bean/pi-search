@@ -31,13 +31,36 @@ Search is pluggable. Two kinds of provider:
 
 **Foundation** providers reuse the API keys you already have configured in pi
 (via `ctx.modelRegistry`), so no extra setup is needed for a provider whose
-chat models you already use. **API** providers read a dedicated env var.
+chat models you already use. **API** providers read a dedicated env var. Any
+provider can also use a manually entered session key (see below).
 
 Foundation providers require a real **API key**. OAuth (subscription) logins —
 e.g. a Claude Pro/Max login stored under the `anthropic` provider — are skipped,
 since their tokens are not valid as an `x-api-key` for the search APIs. If your
 provider login is OAuth, set the matching env var (`ANTHROPIC_API_KEY`, …) or
 point the provider at a pi credential that holds an API key (see below).
+
+### Entering an API key in a session
+
+```
+/search-login                 # choose any provider, even without a detected key
+/search-login brave           # open an API-key input dialog and select Brave
+/search-logout brave          # clear Brave's session key
+/search-logout                # clear all session keys
+```
+
+Login immediately selects the provider. Keys are kept **only in memory** for the
+current extension runtime: session changes, `/reload`, and exit clear them. They
+are not saved to pi auth files, environment variables or the conversation transcript.
+Paste keys into the dialog, **not command arguments**. The standard pi input dialog
+shows text while you enter it; this is not a masked password field. Login requires
+an interactive UI (or an RPC client supporting input dialogs). Keys are not validated
+with the provider until the next search.
+
+Session keys take precedence over all configured key sources, including
+`/search-key`. Logout removes only the session override: existing pi/environment
+keys become available again, and provider selection is unchanged. For durable
+configuration, continue using the key sources in the provider table above.
 
 ### Choosing where a foundation key comes from
 
@@ -82,10 +105,15 @@ PI_SEARCH_PROVIDER=brave pi
 In a session:
 
 ```
-/search-provider              # show provider status and current selection
+/search-provider              # choose a provider (status shown without UI)
 /search-provider tavily       # switch provider
 /search-provider auto         # back to auto-detect
 ```
+
+The interactive picker includes **all** providers, not just those with detected
+keys. Selecting an unconfigured provider opens the session API-key dialog;
+cancelling leaves the previous selection unchanged. `/search-provider <id>` only
+sets the selection; use `/search-login <id>` to enter a key explicitly.
 
 Override the foundation model used for search with `PI_SEARCH_MODEL`
 (e.g. `claude-haiku-4-5`, `gpt-4o-mini`, `gemini-2.0-flash`).
@@ -299,7 +327,8 @@ src/
   index.ts              # registers search/fetch/screenshot tools, commands, --search-provider flag
   search/
     types.ts            # SearchProvider interface, SearchResult/SearchResponse
-    registry.ts         # provider list, auto-detect, selection
+    registry.ts         # provider list, auto-detect, selection, session-key precedence
+    login.ts            # /search-login, /search-logout, private in-memory keys
     keys.ts             # API-key resolution (pi registry + env; skips OAuth creds)
     keySource.ts        # foundation key-source overrides (/search-key, env)
     format.ts           # SearchResponse -> text for the LLM

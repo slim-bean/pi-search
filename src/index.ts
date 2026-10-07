@@ -4,6 +4,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 
 import { resolveProvider, listAvailable, getProvider, PROVIDERS } from "./search/registry";
 import { formatSearchResponse } from "./search/format";
+import { registerSearchLogin } from "./search/login";
 import { fetchReadable } from "./fetch/fetch";
 import { registerBrowserRead } from "./fetch/browser-read";
 import { registerScreenshotTool } from "./fetch/screenshot-tool";
@@ -71,6 +72,7 @@ export default function (pi: ExtensionAPI) {
     (pi.getFlag("search-provider") as string | undefined) ??
     process.env.PI_SEARCH_PROVIDER ??
     "auto";
+  const { keys: sessionKeys, login } = registerSearchLogin(pi, (id) => { selected = id; });
 
   pi.registerTool({
     name: "web_search",
@@ -86,7 +88,7 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: searchParameters,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const { provider, key } = await resolveProvider(ctx as ExtensionContext, selected);
+      const { provider, key } = await resolveProvider(ctx as ExtensionContext, selected, sessionKeys);
       onUpdate?.({ content: [{ type: "text", text: `Searching via ${provider.label}…` }], details: {} });
 
       const resp = await provider.search(
@@ -184,18 +186,37 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const available = await listAvailable(ctx);
+      const available = await listAvailable(ctx, sessionKeys);
       const availableIds = available.map((p) => p.id);
       const lines = PROVIDERS.map((p) => {
         const ok = availableIds.includes(p.id) ? "✓" : "✗";
         const mark = p.id === selected ? " (selected)" : "";
-        return `  ${ok} ${p.id} — ${p.label}${mark}`;
+        return `  ${ok} ${p.id} — ${p.label}${mark}${sessionKeys.has(p.id) ? " (session key)" : ""}`;
       });
-      ctx.ui.notify(
-        `Search provider: ${selected}\n${lines.join("\n")}\n\n` +
-          `Set with: /search-provider <id>`,
-        "info",
-      );
+      if (!ctx.hasUI) {
+        ctx.ui.notify(
+          `Search provider: ${selected}\n${lines.join("\n")}\n\n` +
+            `Set with: /search-provider <id>; enter a key with /search-login <id>`,
+          "info",
+        );
+        return;
+      }
+      const labels = ["auto — first available", ...lines.map((line) => line.trim())];
+      const picked = await ctx.ui.select(`Search provider: ${selected}`, labels);
+      if (!picked) return;
+      const index = labels.indexOf(picked);
+      if (index === 0) {
+        selected = "auto";
+      } else {
+        const provider = PROVIDERS[index - 1];
+        if (!provider) return;
+        if (!availableIds.includes(provider.id)) {
+          await login(ctx, provider);
+          return;
+        }
+        selected = provider.id;
+      }
+      ctx.ui.notify(`Search provider set to: ${selected}`, "info");
     },
   });
 

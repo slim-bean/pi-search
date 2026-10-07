@@ -7,13 +7,20 @@ optional paginated screenshot), and `web_fetch_screenshot` (frozen capture segme
 ## Layout
 
 - `src/index.ts` — entry point. Registers search/fetch tools plus the screenshot
-  continuation helper, `/search-provider` and `/search-key`, and `--search-provider`. Holds the
+  continuation helper, `/search-provider`, `/search-key`, `/search-login`,
+  `/search-logout`, and `--search-provider`. Holds the
   runtime `selected` provider id (flag → command → `PI_SEARCH_PROVIDER` env →
   `auto`).
 - `src/search/types.ts` — `SearchProvider` interface plus `SearchResult` /
   `SearchResponse` / `SearchOptions` and the `recencyToDays` helper.
 - `src/search/registry.ts` — `PROVIDERS` (priority-ordered), `resolveProvider`
-  (selection + key resolution), `listAvailable`.
+  (selection + key resolution), `listAvailable`. Both accept a runtime-private
+  session-key map which overrides configured keys.
+- `src/search/login.ts` — interactive API-key entry for all providers, including
+  unconfigured ones. Login selects the provider; logout removes only session keys.
+  Never persist/echo keys, mutate env, or accept keys in slash-command arguments.
+  Clear keys on session_start/session_shutdown; reload creates a fresh map.
+  `/search-provider` shows all providers and offers login for unavailable ones.
 - `src/search/keys.ts` — `foundationKey` (pi `modelRegistry` then env) and
   `envKey`. `foundationKey` skips OAuth-typed credentials (their tokens aren't
   valid `x-api-key`s) and honors the key-source override.
@@ -63,7 +70,8 @@ optional paginated screenshot), and `web_fetch_screenshot` (frozen capture segme
   `foundationKey(ctx, piProviderName, ...envFallback)` so they reuse the user's
   existing pi credentials, and declare `piProvider` (the pi provider id backing
   them) so `/search-key` can target them. API providers (`tavily`, `brave`,
-  `exa`) use `envKey(...)` only.
+  `exa`) use `envKey(...)` as their configured fallback. Session keys override
+  either path in the registry, without changing pi model credentials.
 - Credential inspection supports legacy authStorage and current ModelRegistry
   methods. If credential type cannot be established, fall back to explicit env keys
   rather than forwarding an unknown token. Current `/search-key` candidates are

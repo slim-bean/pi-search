@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 type Tool = { name: string; parameters: any; execute: (...args: any[]) => Promise<any> };
 
-export async function loadTools(): Promise<Map<string, Tool>> {
+export async function loadExtension() {
   const root = process.env.PI_ROOT ?? resolve(execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(), "@earendil-works/pi-coding-agent");
   const require = createRequire(resolve(root, "package.json"));
   const { createJiti } = require("jiti");
@@ -17,9 +17,19 @@ export async function loadTools(): Promise<Map<string, Tool>> {
   });
   const factory = await jiti.import(fileURLToPath(new URL("../src/index.ts", import.meta.url)), { default: true });
   const tools = new Map<string, Tool>();
+  const commands = new Map<string, any>();
+  const events = new Map<string, Array<(...args: any[]) => any>>();
   factory({
     registerTool(tool: Tool) { tools.set(tool.name, tool); },
-    registerFlag() {}, getFlag() {}, registerCommand() {}, on() {}, events: { on() {} },
+    registerCommand(name: string, command: any) { commands.set(name, command); },
+    on(name: string, handler: (...args: any[]) => any) {
+      events.set(name, [...(events.get(name) ?? []), handler]);
+    },
+    registerFlag() {}, getFlag() {}, getAllTools() { return [...tools.values()]; }, events: { on() {} },
   });
-  return tools;
+  return { tools, commands, events };
+}
+
+export async function loadTools(): Promise<Map<string, Tool>> {
+  return (await loadExtension()).tools;
 }

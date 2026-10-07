@@ -40,6 +40,7 @@ export interface ResolvedProvider {
 export async function resolveProvider(
   ctx: ExtensionContext,
   preferredId: string | undefined,
+  sessionKeys: ReadonlyMap<string, string> = new Map(),
 ): Promise<ResolvedProvider> {
   if (preferredId && preferredId !== "auto") {
     const provider = getProvider(preferredId);
@@ -48,31 +49,34 @@ export async function resolveProvider(
         `Unknown search provider "${preferredId}". Known: ${PROVIDERS.map((p) => p.id).join(", ")}`,
       );
     }
-    const key = await provider.resolveKey(ctx);
+    const key = sessionKeys.get(provider.id) ?? await provider.resolveKey(ctx);
     if (!key) {
-      throw new Error(`No API key available for search provider "${preferredId}".`);
+      throw new Error(`No API key available for search provider "${preferredId}". Use /search-login ${preferredId} or configure its API-key environment variable.`);
     }
     return { provider, key };
   }
 
   for (const provider of PROVIDERS) {
-    const key = await provider.resolveKey(ctx);
+    const key = sessionKeys.get(provider.id) ?? await provider.resolveKey(ctx);
     if (key) return { provider, key };
   }
 
   throw new Error(
     "No web search provider available. Configure a key for one of: " +
       PROVIDERS.map((p) => p.id).join(", ") +
-      ". Foundation providers reuse your pi API keys; Tavily/Brave/Exa use " +
+      ". Use /search-login to enter a session key. Foundation providers reuse your pi API keys; Tavily/Brave/Exa use " +
       "TAVILY_API_KEY / BRAVE_API_KEY / EXA_API_KEY.",
   );
 }
 
 /** Find the available providers (those with a resolvable key). */
-export async function listAvailable(ctx: ExtensionContext): Promise<SearchProvider[]> {
+export async function listAvailable(
+  ctx: ExtensionContext,
+  sessionKeys: ReadonlyMap<string, string> = new Map(),
+): Promise<SearchProvider[]> {
   const available: SearchProvider[] = [];
   for (const provider of PROVIDERS) {
-    if (await provider.resolveKey(ctx)) available.push(provider);
+    if (sessionKeys.get(provider.id) || await provider.resolveKey(ctx)) available.push(provider);
   }
   return available;
 }
