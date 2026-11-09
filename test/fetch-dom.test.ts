@@ -2,6 +2,34 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { extractFromHtml } from "../src/fetch/fetch";
 
+test("Markdown joining preserves every sibling and inline boundary in a long document", () => {
+  // Turndown 7.2.5 replaces string concatenation with an array accumulator.
+  // Empty inline nodes and block separators must not lose or merge prior parts.
+  const paragraphs = Array.from({ length: 128 }, (_, i) => ({
+    html: `<p>Section ${i}: <strong>important</strong><span></span> text and <em>detail</em>.</p>`,
+    markdown: `Section ${i}: **important** text and *detail*.`,
+  }));
+  const result = extractFromHtml(`<html><body><main>${paragraphs.map((p) => p.html).join("\n")}</main></body></html>`,
+    "https://fixture.example/guide", "markdown");
+  assert.equal(result.content, paragraphs.map((p) => p.markdown).join("\n\n"));
+});
+
+test("Markdown block joins preserve fenced code, lists, and GFM tables", () => {
+  const result = extractFromHtml(`<html><body><main>
+    <p>Before <a href="/reference">reference</a>.</p>
+    <pre><code>echo one\necho two</code></pre>
+    <ul><li>First</li><li>Second</li></ul>
+    <table><thead><tr><th>Name</th><th>Value</th></tr></thead>
+      <tbody><tr><td>mode</td><td>safe</td></tr></tbody></table>
+    <p>After.</p>
+  </main></body></html>`, "https://fixture.example/guide", "markdown");
+  assert.match(result.content, /Before \[reference\]\(https:\/\/fixture\.example\/reference\)\./);
+  assert.match(result.content, /```\necho one\necho two\n```/);
+  assert.match(result.content, /- +First\n- +Second/);
+  assert.match(result.content, /\| Name \| Value \|\n\| --- \| --- \|\n\| mode \| safe \|/);
+  assert.match(result.content, /\n\nAfter\.$/);
+});
+
 test("DOM extraction preserves tabbed commands and relative URLs without running page scripts", () => {
   const key = "__piSearchUntrustedPageExecuted";
   const page = `<!doctype html><html><head><title>Deployment guide</title></head><body>
