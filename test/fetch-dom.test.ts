@@ -30,6 +30,22 @@ test("Markdown block joins preserve fenced code, lists, and GFM tables", () => {
   assert.match(result.content, /\n\nAfter\.$/);
 });
 
+test("HTML parser upgrades preserve entities, omitted end tags, and multilingual text", () => {
+  // Exercise jsdom/parse5/entities through the actual extraction pipeline, not
+  // just JSDOM construction. Browsers repair these omitted closing tags.
+  const html = `<html lang="fr-CA"><head><title>Guide &amp; r&eacute;f&eacute;rence</title></head>
+    <body><main><h1>Guide &amp; r&eacute;f&eacute;rence</h1>
+    <p>Fran&ccedil;ais &#x1F680; &lt;config&gt;<p>Deuxi&egrave;me paragraphe
+    <ul><li>premier &amp; second<li>日本語</ul>
+    <p><a href="../r%C3%A9f?one=1&amp;two=2">R&eacute;f&eacute;rence</a></main></body></html>`;
+  const result = extractFromHtml(html, "https://fixture.example/docs/install/", "markdown");
+  assert.notEqual(result.extractor, "naive");
+  assert.match(result.content, /Français 🚀 <config>\n\nDeuxième paragraphe/);
+  assert.match(result.content, /- +premier & second\n- +日本語/);
+  assert.match(result.content, /\[Référence\]\(https:\/\/fixture\.example\/docs\/r%C3%A9f\?one=1&two=2\)/);
+  assert.doesNotMatch(result.content, /&(?:amp|eacute|ccedil);/);
+});
+
 test("DOM extraction preserves tabbed commands and relative URLs without running page scripts", () => {
   const key = "__piSearchUntrustedPageExecuted";
   const page = `<!doctype html><html><head><title>Deployment guide</title></head><body>
