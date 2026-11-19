@@ -46,6 +46,24 @@ test("HTML parser upgrades preserve entities, omitted end tags, and multilingual
   assert.doesNotMatch(result.content, /&(?:amp|eacute|ccedil);/);
 });
 
+test("DOM cloning and hidden-node removal retain adjacent table rows and links", () => {
+  // jsdom 31.0.1 changes subtree connectedness and selector indexing. The
+  // fallback must still remove hidden nodes without losing neighboring rows.
+  const result = extractFromHtml(`<!doctype html><html><body><MAIN class="guide">
+    <table><thead><tr><th>Task</th><th>Command</th></tr></thead><tbody>
+      <tr hidden><td>hidden-row-marker</td><td>never show</td></tr>
+      <tr data-kind="setup"><td><a href="./setup">Setup</a></td><td><code>npm ci</code></td></tr>
+      <tr aria-hidden="true"><td>aria-hidden-row-marker</td><td>never show</td></tr>
+      <tr data-kind="check"><td>Check</td><td><code>npm test</code></td></tr>
+    </tbody></table></MAIN></body></html>`, "https://fixture.example/guide/", "markdown");
+  assert.notEqual(result.extractor, "naive");
+  assert.ok(result.content.includes("| Task | Command |"));
+  assert.ok(result.content.includes("[Setup](https://fixture.example/guide/setup)"));
+  assert.match(result.content, /`npm ci`/);
+  assert.ok(result.content.includes("| Check | `npm test` |"));
+  assert.doesNotMatch(result.content, /hidden-row-marker|never show/);
+});
+
 test("DOM extraction preserves tabbed commands and relative URLs without running page scripts", () => {
   const key = "__piSearchUntrustedPageExecuted";
   const page = `<!doctype html><html><head><title>Deployment guide</title></head><body>

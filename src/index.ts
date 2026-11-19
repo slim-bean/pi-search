@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { enumValue } from "./enum";
 
 import { resolveProvider, listAvailable, getProvider, PROVIDERS } from "./search/registry";
 import { formatSearchResponse } from "./search/format";
@@ -88,12 +89,14 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: searchParameters,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const recency = params.recency === undefined ? undefined :
+        enumValue(params.recency, ["day", "week", "month", "year"], "recency");
       const { provider, key } = await resolveProvider(ctx as ExtensionContext, selected, sessionKeys);
       onUpdate?.({ content: [{ type: "text", text: `Searching via ${provider.label}…` }], details: {} });
 
       const resp = await provider.search(
         params.query,
-        { maxResults: params.maxResults, recency: params.recency },
+        { maxResults: params.maxResults, recency },
         key,
         signal,
       );
@@ -132,7 +135,7 @@ export default function (pi: ExtensionAPI) {
       onUpdate?.({ content: [{ type: "text", text: `Fetching ${params.url}…` }], details: {} });
       const result = await fetchReadable(params.url, {
         maxChars: params.maxChars,
-        format: params.format,
+        format: params.format === undefined ? undefined : enumValue(params.format, ["markdown", "text", "html"], "format"),
         signal,
         screenshot: params.screenshot,
       });
