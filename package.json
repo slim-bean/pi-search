@@ -1,6 +1,6 @@
 {
   "name": "pi-search",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "Pluggable web search + readable web fetch tools for the pi coding agent.",
   "type": "module",
   "license": "MIT",

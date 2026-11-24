@@ -56,7 +56,10 @@ export default function (pi: ExtensionAPI) {
   });
   registerScreenshotTool(pi);
   let browserReadRegistered = false;
-  pi.on("session_start", () => {
+  let completionContext: ExtensionContext | undefined;
+  pi.on("session_shutdown", () => { completionContext = undefined; });
+  pi.on("session_start", (_event, ctx) => {
+    completionContext = ctx;
     if (!browserReadRegistered && pi.getAllTools().some((tool) => tool.name === "browser_dom")) {
       registerBrowserRead(pi);
       browserReadRegistered = true;
@@ -171,7 +174,7 @@ export default function (pi: ExtensionAPI) {
         { value: "auto", label: "auto (first available)" },
         ...PROVIDERS.map((p) => ({ value: p.id, label: p.label })),
       ];
-      const filtered = items.filter((i) => i.value.startsWith(prefix));
+      const filtered = items.filter((i) => i.value.startsWith(prefix.trimStart()));
       return filtered.length > 0 ? filtered : null;
     },
     async handler(args, ctx) {
@@ -247,13 +250,27 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("search-key", {
     description: "Show or set which pi provider supplies a foundation provider's search API key",
     getArgumentCompletions(prefix) {
-      const items = [
-        ...foundations().map((p) => ({ value: p.id, label: `${p.id} (foundation provider)` })),
+      const parts = prefix.trimStart().split(/\s+/);
+      const targets = foundations();
+      const sources = [
         { value: KEY_SOURCE_DEFAULT, label: "default (use provider's own credentials)" },
         { value: KEY_SOURCE_ENV, label: "env (environment variable only)" },
+        ...(completionContext ? listApiKeyProviders(completionContext) : [])
+          .filter((id) => id !== KEY_SOURCE_DEFAULT && id !== KEY_SOURCE_ENV)
+          .map((value) => ({ value, label: `${value} (pi API-key provider)` })),
       ];
-      const filtered = items.filter((i) => i.value.startsWith(prefix));
-      return filtered.length > 0 ? filtered : null;
+      let matches: typeof sources = [];
+      if (parts.length === 1) {
+        const items = targets.map((p) => ({ value: p.id, label: `${p.id} (foundation provider)` }));
+        if (getProvider(selected)?.kind === "foundation") {
+          items.push(...sources.filter((source) => !targets.some((target) => target.id === source.value)));
+        }
+        matches = items.filter((item) => item.value.startsWith(parts[0]));
+      } else if (parts.length === 2 && targets.some((target) => target.id === parts[0])) {
+        matches = sources.filter((item) => item.value.startsWith(parts[1]))
+          .map((item) => ({ ...item, value: `${parts[0]} ${item.value}` }));
+      }
+      return matches.length ? matches : null;
     },
     async handler(args, ctx) {
       const parts = args.trim().split(/\s+/).filter(Boolean);

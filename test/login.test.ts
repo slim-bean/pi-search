@@ -84,6 +84,31 @@ test("logout falls back to configured keys; session changes and shutdown clear m
   }
 });
 
+test("search-key completes whole arguments without exposing credentials", async () => {
+  const { commands, events } = await loadExtension();
+  const ctx = {
+    modelRegistry: {
+      getAll: () => [{ provider: "api-key-provider" }, { provider: "oauth-provider" }],
+      getProviderAuthStatus: () => ({ configured: true }),
+      isUsingOAuth: (model: { provider: string }) => model.provider === "oauth-provider",
+    },
+    ui: { notify() {} },
+  };
+  for (const start of events.get("session_start") ?? []) start({}, ctx);
+  const complete = (prefix: string) =>
+    commands.get("search-key").getArgumentCompletions(prefix)?.map((item: { value: string }) => item.value);
+  await commands.get("search-provider").handler("auto", ctx);
+  assert.deepEqual(complete("anth"), ["anthropic"]);
+  assert.deepEqual(complete("anthropic "), ["anthropic default", "anthropic env", "anthropic api-key-provider"]);
+  assert.equal(complete("anthropic oauth"), undefined);
+  assert.equal(complete("brave "), undefined);
+  assert.equal(complete("anthropic env extra"), undefined);
+  await commands.get("search-provider").handler("anthropic", ctx);
+  assert.deepEqual(complete("api"), ["api-key-provider"]);
+  for (const stop of events.get("session_shutdown") ?? []) stop();
+  assert.equal(complete("api"), undefined);
+});
+
 test("registered provider picker includes missing providers and prompts for their key", async () => {
   const { commands } = await loadExtension();
   const notices: string[] = [];

@@ -27,7 +27,7 @@ export function registerSearchLogin(pi: ExtensionAPI, selectProvider: (id: strin
   }
 
   const completions = (prefix: string) => {
-    const items = PROVIDERS.filter((p) => p.id.startsWith(prefix)).map((p) => ({ value: p.id, label: p.label }));
+    const items = PROVIDERS.filter((p) => p.id.startsWith(prefix.trimStart())).map((p) => ({ value: p.id, label: p.label }));
     return items.length ? items : null;
   };
 
@@ -59,7 +59,7 @@ export function registerSearchLogin(pi: ExtensionAPI, selectProvider: (id: strin
     description: "Clear a session search API key (or all); configured keys remain available",
     getArgumentCompletions(prefix) {
       const items = [{ value: "all", label: "all session keys" }, ...PROVIDERS.map((p) => ({ value: p.id, label: p.label }))];
-      const matches = items.filter((p) => p.value.startsWith(prefix));
+      const matches = items.filter((p) => p.value.startsWith(prefix.trimStart()));
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {

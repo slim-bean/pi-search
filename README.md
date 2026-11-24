@@ -70,6 +70,10 @@ provider that holds an API key (e.g. `anthropic-apikey` when your `anthropic`
 login is OAuth), use the `/search-key` command or the
 `PI_SEARCH_KEY_PROVIDER_<PROVIDER>` env var.
 
+Argument completion suggests foundation providers first, then `default`,
+`env`, and configured non-OAuth Pi provider IDs as key sources. No key values
+are shown in suggestions.
+
 Precedence: `/search-key` runtime choice → `PI_SEARCH_KEY_PROVIDER_<PROVIDER>` →
 default (provider's own credentials) → env-var fallback.
 
